@@ -344,7 +344,7 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  margin: 0 0 14px;
+  margin: 0;
   border-left: 3px solid transparent;
   padding-left: 8px;
   margin-left: -1px;
@@ -378,6 +378,12 @@
 
 .ws-paragraph {
   margin: 0;
+  white-space: pre-wrap;
+}
+
+.ws-empty-line {
+  min-height: 2em;
+  margin-bottom: 0;
 }
 
 .empty-msg {
@@ -512,7 +518,7 @@
 
 .level-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
   gap: 8px;
 }
 

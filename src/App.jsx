@@ -15,9 +15,61 @@ async function extractPdfPages(file) {
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i)
     const content = await page.getTextContent()
-    pages.push(content.items.map((it) => it.str).join(' ').trim())
+    pages.push(extractPdfPageText(content.items))
   }
   return pages
+}
+
+function extractPdfPageText(items) {
+  const lines = []
+  let line = ''
+  let previous = null
+
+  const pushLine = (lineBreaks = 1) => {
+    lines.push(line.trimEnd())
+    for (let i = 1; i < lineBreaks; i++) lines.push('')
+    line = ''
+  }
+
+  for (const item of items) {
+    if (!('str' in item)) continue
+
+    const text = item.str
+    const x = item.transform?.[4]
+    const y = item.transform?.[5]
+    const height = Math.abs(item.height || item.transform?.[3] || 0)
+
+    if (previous) {
+      const lineHeight = Math.max(previous.height, height, 1)
+      const verticalGap = Number.isFinite(y) && Number.isFinite(previous.y) ? Math.abs(y - previous.y) : 0
+      const previousEndX = previous.x + previous.width
+      const returnedToLineStart = Number.isFinite(x) && Number.isFinite(previousEndX)
+        ? x <= previous.x + lineHeight * 1.5 || x < previousEndX - lineHeight * 0.5
+        : false
+      const startsNewLine = previous.hasEOL || (verticalGap > lineHeight * 0.45 && returnedToLineStart)
+
+      if (startsNewLine) {
+        pushLine(verticalGap > lineHeight * 1.7 ? 2 : 1)
+      } else if (line && text && !/\s$/.test(line) && !/^\s/.test(text)) {
+        const horizontalGap = Number.isFinite(x) && Number.isFinite(previousEndX) ? x - previousEndX : 0
+        const averageCharacterWidth = previous.text.length ? previous.width / previous.text.length : 0
+        if (horizontalGap > Math.max(0.8, averageCharacterWidth * 0.18)) line += ' '
+      }
+    }
+
+    line += text
+    previous = {
+      text,
+      x: Number.isFinite(x) ? x : 0,
+      y: Number.isFinite(y) ? y : 0,
+      width: Math.abs(item.width || 0),
+      height,
+      hasEOL: Boolean(item.hasEOL),
+    }
+  }
+
+  if (line || lines.length === 0) lines.push(line.trimEnd())
+  return lines.join('\n').trim()
 }
 
 const EMPTY_SET = new Set()
@@ -25,6 +77,7 @@ const EMPTY_OBJ = {}
 const NOOP = () => {}
 
 const LEVELS = [
+  { id: 0, label: 'L0', name: '원문 그대로', density: 0, minGapWords: Infinity, densityLabel: '빈칸 없음' },
   { id: 1, label: 'L1', name: '가볍게', density: 0.06, minGapWords: 6 },
   { id: 2, label: 'L2', name: '기본', density: 0.1, minGapWords: 5 },
   { id: 3, label: 'L3', name: '집중', density: 0.16, minGapWords: 4 },
@@ -115,12 +168,15 @@ function spanKey(paraIdx, start) {
 const LINE_BLANK_MATCH = (c) => c.length >= 2 && (HANGUL.test(c) || /\d/.test(c))
 
 function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLines, neverBlankLines, includeFigures, alwaysList, neverList, manualInclude, manualExclude }) {
-  const paragraphs = sourceText.split(/\n+/).map((t) => t.trim()).filter(Boolean)
+  const paragraphs = sourceText
+    ? sourceText.replace(/\r\n?/g, '\n').split('\n')
+    : []
+  const rawMode = level.id === 0
   const activeCats = CATEGORIES.filter((c) => selectedCategories.has(c.id))
   const subjectOnly = activeCats.filter((c) => c.group === 'subject' && c.id !== 'common')
 
   let usedFallback = false
-  if (subjectOnly.length > 0 && !selectedCategories.has('common')) {
+  if (!rawMode && subjectOnly.length > 0 && !selectedCategories.has('common')) {
     let anyMatch = false
     outer: for (const para of paragraphs) {
       for (const w of extractWords(para)) {
@@ -133,11 +189,11 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
 
   const perPara = paragraphs.map((paraText, paraIdx) => {
     const figure = isFigureLine(paraText)
-    const lineState = neverBlankLines.has(paraIdx) ? 'never' : alwaysBlankLines.has(paraIdx) ? 'always' : 'auto'
+    const lineState = rawMode ? 'auto' : neverBlankLines.has(paraIdx) ? 'never' : alwaysBlankLines.has(paraIdx) ? 'always' : 'auto'
     const words = extractWords(paraText)
 
     let candidates = []
-    if (lineState === 'never') {
+    if (rawMode || lineState === 'never') {
       candidates = []
     } else if (figure) {
       if (includeFigures) {
@@ -152,7 +208,7 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
       }
     }
 
-    const alwaysSpans = (figure || lineState === 'never') ? [] : findPhraseSpans(paraText, alwaysList).map((s) => ({ ...s, category: 'always', style: 'full', forced: true }))
+    const alwaysSpans = (rawMode || figure || lineState === 'never') ? [] : findPhraseSpans(paraText, alwaysList).map((s) => ({ ...s, category: 'always', style: 'full', forced: true }))
     const neverSpans = findPhraseSpans(paraText, neverList)
 
     let pool = [...candidates, ...alwaysSpans].filter((s) => !neverSpans.some((n) => overlaps(s, n)))
@@ -211,8 +267,10 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
     }
   }
 
-  for (const k of manualInclude) chosenKeys.add(k)
-  for (const k of manualExclude) chosenKeys.delete(k)
+  if (!rawMode) {
+    for (const k of manualInclude) chosenKeys.add(k)
+    for (const k of manualExclude) chosenKeys.delete(k)
+  }
 
   let seq = 0
   const renderParas = perPara.map((p) => {
@@ -225,7 +283,7 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
 
   const blankCount = renderParas.reduce((s, p) => s + p.blanks.length, 0)
   const answers = renderParas.flatMap((p) => p.blanks).sort((a, b) => a.seq - b.seq)
-  const categoryLabel = usedFallback ? '공통(대체)' : effectiveCats.map((c) => c.label).join('·') || '공통'
+  const categoryLabel = rawMode ? '원문' : usedFallback ? '공통(대체)' : effectiveCats.map((c) => c.label).join('·') || '공통'
 
   return { paragraphs: renderParas, blankCount, answers, usedFallback, categoryLabel }
 }
@@ -252,11 +310,14 @@ function BlankField({ blank, studyMode, userAnswers, setUserAnswer, checked }) {
 
 function Paragraph({ p, studyMode, userAnswers, setUserAnswer, checked, editMode, toggleManual }) {
   const stateClass = p.lineState === 'always' ? 'line-always' : p.lineState === 'never' ? 'line-never' : ''
+  const isEmpty = !p.paraText.trim()
   return (
-    <div className={`ws-line ${stateClass}`}>
-      <span className="ws-line-num">{p.paraIdx + 1}</span>
+    <div className={`ws-line${isEmpty ? ' ws-empty-line' : ''} ${stateClass}`}>
+      <span className="ws-line-num">{isEmpty ? '' : p.paraIdx + 1}</span>
       <div className="ws-line-content">
-        {p.figure ? (
+        {isEmpty ? (
+          <span aria-hidden="true">&nbsp;</span>
+        ) : p.figure ? (
           <div className="figure-box">
             <div className="figure-label">FIGURE · {p.paraText.replace(/^\[|\]$/g, '').slice(0, 2)}</div>
             <div className="figure-text">
@@ -361,6 +422,7 @@ function buildPlainText(worksheets, title, reveal) {
   const lines = [title, '']
   worksheets.forEach((ws, pageIdx) => {
     if (worksheets.length > 1) {
+      if (pageIdx > 0) lines.push('')
       lines.push(`── ${pageIdx + 1}페이지 ──`, '')
     }
     for (const p of ws.paragraphs) {
@@ -370,7 +432,6 @@ function buildPlainText(worksheets, title, reveal) {
         text = text.slice(0, b.start) + blankFillText(b, reveal) + text.slice(b.end)
       }
       lines.push(p.figure ? `[FIGURE] ${text}` : text)
-      lines.push('')
     }
   })
   return lines.join('\n')
@@ -387,7 +448,10 @@ function buildHtml(worksheets, title, reveal) {
           : `<span style="display:inline-block;border-bottom:1px solid #333;min-width:${Math.max(b.clean.length, 4)}ch;">&nbsp;</span>`
         text = text.slice(0, b.start) + fill + text.slice(b.end)
       }
-      return p.figure ? `<div style="border:1px dashed #999;padding:8px;margin:8px 0;">${text}</div>` : `<p>${text}</p>`
+      if (!p.paraText.trim()) return '<div style="min-height:1.8em">&nbsp;</div>'
+      return p.figure
+        ? `<div style="border:1px dashed #999;padding:8px;margin:8px 0;">${text}</div>`
+        : `<div style="min-height:1.8em">${text}</div>`
     }).join('\n')
     const heading = worksheets.length > 1 ? `<h2>${pageIdx + 1}페이지</h2>` : ''
     return `${heading}${pageBody}`
@@ -654,7 +718,7 @@ export default function App() {
           >
             <p className="dz-title">여기로 파일을 끌어다 놓으세요</p>
             <p className="dz-sub">또는 클릭해서 파일 선택 · 아래 칸에 직접 붙여넣기</p>
-            <p className="dz-sub">PDF·TXT·MD·HTML 문서를 놓으면 본문 텍스트만 추출합니다 (PDF는 페이지 단위로 나뉩니다)</p>
+            <p className="dz-sub">PDF·TXT·MD·HTML 문서를 놓으면 원문의 줄바꿈을 유지해 본문 텍스트만 추출합니다 (PDF는 페이지 단위)</p>
             {fileStatus && <p className="dz-status">{fileStatus}</p>}
             <input ref={fileInputRef} type="file" accept=".txt,.md,.html,.pdf,application/pdf" hidden onChange={handleFile} />
           </div>
@@ -762,7 +826,7 @@ export default function App() {
               <button key={l.id} className={`level-btn${level === l.id ? ' active' : ''}`} onClick={() => setLevel(l.id)}>
                 <span className="level-id">{l.label}</span>
                 <span className="level-name">{l.name}</span>
-                <span className="level-pct">약 {Math.round(l.density * 100)}%</span>
+                <span className="level-pct">{l.densityLabel || `약 ${Math.round(l.density * 100)}%`}</span>
               </button>
             ))}
           </div>
@@ -822,14 +886,14 @@ export default function App() {
             {worksheet.paragraphs.length > 0 && (
               <div className="line-toggle-row">
                 <span className="line-toggle-label">줄 선택</span>
-                {worksheet.paragraphs.map((p, i) => (
+                {worksheet.paragraphs.filter((p) => p.paraText.trim()).map((p) => (
                   <button
-                    key={i}
-                    className={`line-chip${alwaysBlankLines.has(i) ? ' selected-always' : ''}`}
-                    onClick={() => toggleAlwaysLine(i)}
-                    title={`${i + 1}번째 줄 전체를 빈칸으로 가리기`}
+                    key={p.paraIdx}
+                    className={`line-chip${alwaysBlankLines.has(p.paraIdx) ? ' selected-always' : ''}`}
+                    onClick={() => toggleAlwaysLine(p.paraIdx)}
+                    title={`${p.paraIdx + 1}번째 줄 전체를 빈칸으로 가리기`}
                   >
-                    {i + 1}
+                    {p.paraIdx + 1}
                   </button>
                 ))}
               </div>
@@ -850,14 +914,14 @@ export default function App() {
             {worksheet.paragraphs.length > 0 && (
               <div className="line-toggle-row">
                 <span className="line-toggle-label">줄 선택</span>
-                {worksheet.paragraphs.map((p, i) => (
+                {worksheet.paragraphs.filter((p) => p.paraText.trim()).map((p) => (
                   <button
-                    key={i}
-                    className={`line-chip${neverBlankLines.has(i) ? ' selected-never' : ''}`}
-                    onClick={() => toggleNeverLine(i)}
-                    title={`${i + 1}번째 줄 전체를 빈칸 없이 남기기`}
+                    key={p.paraIdx}
+                    className={`line-chip${neverBlankLines.has(p.paraIdx) ? ' selected-never' : ''}`}
+                    onClick={() => toggleNeverLine(p.paraIdx)}
+                    title={`${p.paraIdx + 1}번째 줄 전체를 빈칸 없이 남기기`}
                   >
-                    {i + 1}
+                    {p.paraIdx + 1}
                   </button>
                 ))}
               </div>
