@@ -2,6 +2,24 @@ import { useMemo, useRef, useState } from 'react'
 import './App.css'
 import pkg from '../package.json'
 
+async function extractPdfText(file) {
+  const [pdfjsLib, { default: pdfjsWorker }] = await Promise.all([
+    import('pdfjs-dist'),
+    import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+  ])
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
+
+  const buffer = await file.arrayBuffer()
+  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise
+  const pageTexts = []
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i)
+    const content = await page.getTextContent()
+    pageTexts.push(content.items.map((it) => it.str).join(' '))
+  }
+  return pageTexts.join('\n')
+}
+
 const LEVELS = [
   { id: 1, label: 'L1', name: '가볍게', density: 0.06, minGapWords: 6 },
   { id: 2, label: 'L2', name: '기본', density: 0.1, minGapWords: 5 },
@@ -208,32 +226,11 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
   return { paragraphs: renderParas, blankCount, answers, usedFallback, categoryLabel }
 }
 
-function BlankField({ blank, studyMode, userAnswers, setUserAnswer, checked, allAnswerTexts }) {
+function BlankField({ blank, studyMode, userAnswers, setUserAnswer, checked }) {
   const answerText = blank.clean
-  const options = useMemo(() => {
-    const pool = allAnswerTexts.filter((t) => t !== answerText)
-    const shuffled = [...pool].sort(() => Math.random() - 0.5).slice(0, 3)
-    return [...shuffled, answerText].sort(() => Math.random() - 0.5)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blank.key])
 
   if (studyMode === 'reveal') {
     return <span className="blank-reveal">{answerText}</span>
-  }
-  if (studyMode === 'choice') {
-    const current = userAnswers[blank.key] || ''
-    const isCorrect = checked && current === answerText
-    const isWrong = checked && current && current !== answerText
-    return (
-      <select
-        className={`blank-select${isCorrect ? ' is-correct' : ''}${isWrong ? ' is-wrong' : ''}`}
-        value={current}
-        onChange={(e) => setUserAnswer(blank.key, e.target.value)}
-      >
-        <option value="">선택…</option>
-        {options.map((o, i) => <option key={i} value={o}>{o}</option>)}
-      </select>
-    )
   }
   const current = userAnswers[blank.key] || ''
   const isCorrect = checked && current.trim() === answerText
@@ -249,7 +246,7 @@ function BlankField({ blank, studyMode, userAnswers, setUserAnswer, checked, all
   )
 }
 
-function Paragraph({ p, studyMode, userAnswers, setUserAnswer, checked, allAnswerTexts, editMode, toggleManual }) {
+function Paragraph({ p, studyMode, userAnswers, setUserAnswer, checked, editMode, toggleManual }) {
   const stateClass = p.lineState === 'always' ? 'line-always' : p.lineState === 'never' ? 'line-never' : ''
   return (
     <div className={`ws-line ${stateClass}`}>
@@ -259,12 +256,12 @@ function Paragraph({ p, studyMode, userAnswers, setUserAnswer, checked, allAnswe
           <div className="figure-box">
             <div className="figure-label">FIGURE · {p.paraText.replace(/^\[|\]$/g, '').slice(0, 2)}</div>
             <div className="figure-text">
-              {renderSegments(p.paraText, p.blanks, p.unchosen, { studyMode, userAnswers, setUserAnswer, checked, allAnswerTexts, editMode, toggleManual, paraIdx: p.paraIdx })}
+              {renderSegments(p.paraText, p.blanks, p.unchosen, { studyMode, userAnswers, setUserAnswer, checked, editMode, toggleManual, paraIdx: p.paraIdx })}
             </div>
           </div>
         ) : (
           <p className="ws-paragraph">
-            {renderSegments(p.paraText, p.blanks, p.unchosen, { studyMode, userAnswers, setUserAnswer, checked, allAnswerTexts, editMode, toggleManual, paraIdx: p.paraIdx })}
+            {renderSegments(p.paraText, p.blanks, p.unchosen, { studyMode, userAnswers, setUserAnswer, checked, editMode, toggleManual, paraIdx: p.paraIdx })}
           </p>
         )}
       </div>
@@ -307,7 +304,6 @@ function renderSegments(paraText, blanks, unchosen, ctx) {
               userAnswers={ctx.userAnswers}
               setUserAnswer={ctx.setUserAnswer}
               checked={ctx.checked}
-              allAnswerTexts={ctx.allAnswerTexts}
             />
           </span>,
         )
@@ -320,7 +316,6 @@ function renderSegments(paraText, blanks, unchosen, ctx) {
             userAnswers={ctx.userAnswers}
             setUserAnswer={ctx.setUserAnswer}
             checked={ctx.checked}
-            allAnswerTexts={ctx.allAnswerTexts}
           />,
         )
       }
@@ -404,6 +399,7 @@ export default function App() {
   const [checked, setChecked] = useState(false)
   const [exportFormat, setExportFormat] = useState('pdf')
   const [worksheetTitle, setWorksheetTitle] = useState('빈칸 학습지')
+  const [fileStatus, setFileStatus] = useState('')
   const fileInputRef = useRef(null)
 
   const levelObj = LEVELS.find((l) => l.id === level)
@@ -424,8 +420,6 @@ export default function App() {
       }),
     [sourceText, levelObj, selectedCategories, alwaysBlankLines, neverBlankLines, includeFigures, alwaysList, neverList, manualInclude, manualExclude],
   )
-
-  const allAnswerTexts = useMemo(() => [...new Set(worksheet.answers.map((a) => a.clean))], [worksheet])
 
   const writtenCount = Object.values(userAnswers).filter((v) => v && v.trim()).length
   const correctCount = worksheet.answers.filter((a) => (userAnswers[a.key] || '').trim() === a.clean).length
@@ -491,22 +485,33 @@ export default function App() {
     }
   }
 
-  function handleFile(e) {
-    const file = e.target.files?.[0]
+  async function loadFile(file) {
     if (!file) return
+    if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+      setFileStatus('PDF에서 텍스트를 추출하는 중…')
+      try {
+        const text = await extractPdfText(file)
+        setSourceText(text.trim())
+        setFileStatus('')
+      } catch {
+        setFileStatus('PDF에서 텍스트를 추출하지 못했습니다.')
+      }
+      return
+    }
     const reader = new FileReader()
     reader.onload = () => setSourceText(String(reader.result || ''))
     reader.readAsText(file)
+  }
+
+  function handleFile(e) {
+    const file = e.target.files?.[0]
+    loadFile(file)
     e.target.value = ''
   }
 
   function handleDrop(e) {
     e.preventDefault()
-    const file = e.dataTransfer.files?.[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => setSourceText(String(reader.result || ''))
-    reader.readAsText(file)
+    loadFile(e.dataTransfer.files?.[0])
   }
 
   function addAlways() {
@@ -565,8 +570,9 @@ export default function App() {
           >
             <p className="dz-title">여기로 파일을 끌어다 놓으세요</p>
             <p className="dz-sub">또는 클릭해서 파일 선택 · 아래 칸에 직접 붙여넣기</p>
-            <p className="dz-sub">문서를 놓으면 본문 텍스트만 추출합니다</p>
-            <input ref={fileInputRef} type="file" accept=".txt,.md,.html" hidden onChange={handleFile} />
+            <p className="dz-sub">PDF·TXT·MD·HTML 문서를 놓으면 본문 텍스트만 추출합니다</p>
+            {fileStatus && <p className="dz-status">{fileStatus}</p>}
+            <input ref={fileInputRef} type="file" accept=".txt,.md,.html,.pdf,application/pdf" hidden onChange={handleFile} />
           </div>
           <textarea
             className="source-textarea"
@@ -586,7 +592,6 @@ export default function App() {
             <div className="mode-tabs">
               {[
                 ['fill', '채워쓰기'],
-                ['choice', '보기에서 고르기'],
                 ['reveal', '정답 공개'],
                 ['edit', '빈칸 편집'],
               ].map(([id, label]) => (
@@ -628,7 +633,6 @@ export default function App() {
                 userAnswers={userAnswers}
                 setUserAnswer={setUserAnswer}
                 checked={checked}
-                allAnswerTexts={allAnswerTexts}
                 editMode={editMode}
                 toggleManual={toggleManual}
               />

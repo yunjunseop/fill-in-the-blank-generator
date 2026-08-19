@@ -106,6 +106,13 @@
   margin: 2px 0;
 }
 
+.dz-status {
+  font-size: 12px;
+  color: var(--green);
+  font-weight: 600;
+  margin: 8px 0 0;
+}
+
 .source-textarea {
   flex: 1;
   min-height: 320px;
@@ -346,8 +353,7 @@
   font-size: 14px;
 }
 
-.blank-input,
-.blank-select {
+.blank-input {
   border: none;
   border-bottom: 1.5px solid var(--ink);
   background: transparent;
@@ -358,21 +364,18 @@
   text-align: center;
 }
 
-.blank-input:focus,
-.blank-select:focus {
+.blank-input:focus {
   outline: none;
   border-bottom-color: var(--green);
 }
 
-.blank-input.is-correct,
-.blank-select.is-correct {
+.blank-input.is-correct {
   color: var(--green);
   border-bottom-color: var(--green);
   font-weight: 600;
 }
 
-.blank-input.is-wrong,
-.blank-select.is-wrong {
+.blank-input.is-wrong {
   color: var(--red);
   border-bottom-color: var(--red);
 }
