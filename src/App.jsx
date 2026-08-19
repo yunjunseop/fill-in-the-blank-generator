@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { Fragment, useMemo, useRef, useState } from 'react'
 import './App.css'
 import pkg from '../package.json'
 
@@ -15,10 +15,16 @@ async function extractPdfPages(file) {
   const visualsByPage = {}
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i)
+    const viewport = page.getViewport({ scale: 1.5 })
     const content = await page.getTextContent()
-    pages.push(extractPdfPageText(content.items))
+    const { text, lineTops } = extractPdfPageText(content.items, viewport)
+    pages.push(text)
     try {
-      visualsByPage[i - 1] = await extractPdfPageVisuals(page)
+      const visuals = await extractPdfPageVisuals(page, viewport)
+      visualsByPage[i - 1] = visuals.map((visual) => {
+        const firstLineBelow = lineTops.findIndex((lineTop) => Number.isFinite(lineTop) && lineTop > visual.order)
+        return { ...visual, insertBeforeLine: firstLineBelow === -1 ? lineTops.length : firstLineBelow }
+      })
     } catch {
       visualsByPage[i - 1] = []
     }
@@ -26,8 +32,7 @@ async function extractPdfPages(file) {
   return { pages, visualsByPage }
 }
 
-async function extractPdfPageVisuals(page) {
-  const viewport = page.getViewport({ scale: 1.5 })
+async function extractPdfPageVisuals(page, viewport) {
   const canvas = document.createElement('canvas')
   canvas.width = Math.ceil(viewport.width)
   canvas.height = Math.ceil(viewport.height)
@@ -65,7 +70,6 @@ async function extractPdfPageVisuals(page) {
     cropContext.fillRect(0, 0, crop.width, crop.height)
     cropContext.drawImage(canvas, left, top, width, height, 0, 0, crop.width, crop.height)
     visuals.push({
-      id: `pdf-visual-${visuals.length + 1}`,
       src: crop.toDataURL('image/jpeg', 0.9),
       width: crop.width,
       height: crop.height,
@@ -73,18 +77,27 @@ async function extractPdfPageVisuals(page) {
     })
   }
 
-  return visuals.sort((a, b) => a.order - b.order)
+  return visuals
+    .sort((a, b) => a.order - b.order)
+    .map((visual, index) => ({ ...visual, id: `pdf-visual-${index + 1}`, number: index + 1 }))
 }
 
-function extractPdfPageText(items) {
+function extractPdfPageText(items, viewport) {
   const lines = []
+  const lineTops = []
   let line = ''
+  let lineTop = null
   let previous = null
 
   const pushLine = (lineBreaks = 1) => {
     lines.push(line.trimEnd())
-    for (let i = 1; i < lineBreaks; i++) lines.push('')
+    lineTops.push(lineTop)
+    for (let i = 1; i < lineBreaks; i++) {
+      lines.push('')
+      lineTops.push(null)
+    }
     line = ''
+    lineTop = null
   }
 
   for (const item of items) {
@@ -94,6 +107,9 @@ function extractPdfPageText(items) {
     const x = item.transform?.[4]
     const y = item.transform?.[5]
     const height = Math.abs(item.height || item.transform?.[3] || 0)
+    const itemTop = Number.isFinite(x) && Number.isFinite(y)
+      ? Math.min(viewport.convertToViewportPoint(x, y)[1], viewport.convertToViewportPoint(x, y + height)[1])
+      : null
 
     if (previous) {
       const lineHeight = Math.max(previous.height, height, 1)
@@ -117,6 +133,7 @@ function extractPdfPageText(items) {
       }
     }
 
+    lineTop = lineTop === null ? itemTop : Number.isFinite(itemTop) ? Math.min(lineTop, itemTop) : lineTop
     line += text
     previous = {
       text,
@@ -128,8 +145,16 @@ function extractPdfPageText(items) {
     }
   }
 
-  if (line || lines.length === 0) lines.push(line.trimEnd())
-  return lines.join('\n').trim()
+  if (line || lines.length === 0) pushLine()
+  while (lines.length && !lines[0].trim()) {
+    lines.shift()
+    lineTops.shift()
+  }
+  while (lines.length && !lines.at(-1).trim()) {
+    lines.pop()
+    lineTops.pop()
+  }
+  return { text: lines.join('\n'), lineTops }
 }
 
 const EMPTY_SET = new Set()
@@ -424,7 +449,7 @@ function PageVisuals({ visuals, toggleVisual, interactive = true }) {
     <div className="page-visuals">
       {shownVisuals.map((visual, index) => (
         <div key={visual.id} className={`page-visual-row${visual.excluded ? ' is-excluded' : ''}`}>
-          <div className="page-visual-marker">도표 {index + 1}</div>
+          <div className="page-visual-marker">도표 {visual.number || index + 1}</div>
           <div className="page-visual-content">
             {visual.excluded ? (
               <div className="page-visual-placeholder">미리보기와 출력에서 삭제됨</div>
@@ -443,6 +468,28 @@ function PageVisuals({ visuals, toggleVisual, interactive = true }) {
         </div>
       ))}
     </div>
+  )
+}
+
+function WorksheetContent({ worksheet, paragraphProps, toggleVisual, interactive = true }) {
+  const visualsByLine = new Map()
+  for (const visual of worksheet.visuals) {
+    const lineIndex = Math.min(Math.max(visual.insertBeforeLine ?? worksheet.paragraphs.length, 0), worksheet.paragraphs.length)
+    const grouped = visualsByLine.get(lineIndex) || []
+    grouped.push(visual)
+    visualsByLine.set(lineIndex, grouped)
+  }
+
+  return (
+    <>
+      {worksheet.paragraphs.map((p) => (
+        <Fragment key={p.paraIdx}>
+          <PageVisuals visuals={visualsByLine.get(p.paraIdx) || EMPTY_ARRAY} toggleVisual={toggleVisual} interactive={interactive} />
+          <Paragraph p={p} {...paragraphProps} />
+        </Fragment>
+      ))}
+      <PageVisuals visuals={visualsByLine.get(worksheet.paragraphs.length) || EMPTY_ARRAY} toggleVisual={toggleVisual} interactive={interactive} />
+    </>
   )
 }
 
@@ -530,6 +577,20 @@ function blankFillText(b, reveal) {
   return reveal ? b.clean : (b.style === 'hint' ? `${b.clean[0]}${'_'.repeat(Math.max(b.clean.length - 1, 3))}` : '_'.repeat(Math.max(b.clean.length, 4)))
 }
 
+function includedVisualsAtLine(worksheet, lineIndex) {
+  const lastLine = worksheet.paragraphs.length
+  return worksheet.visuals.filter((visual) => {
+    const visualLine = Math.min(Math.max(visual.insertBeforeLine ?? lastLine, 0), lastLine)
+    return !visual.excluded && visualLine === lineIndex
+  })
+}
+
+function buildHtmlVisuals(visuals) {
+  return visuals
+    .map((visual) => `<figure style="margin:20px 0;break-inside:avoid;"><img src="${visual.src}" alt="그림·도표 ${visual.number}" style="display:block;max-width:100%;height:auto;margin:auto;"></figure>`)
+    .join('\n')
+}
+
 function buildPlainText(worksheets, title, reveal) {
   const lines = [title, '']
   worksheets.forEach((ws, pageIdx) => {
@@ -538,6 +599,7 @@ function buildPlainText(worksheets, title, reveal) {
       lines.push(`── ${pageIdx + 1}페이지 ──`, '')
     }
     for (const p of ws.paragraphs) {
+      includedVisualsAtLine(ws, p.paraIdx).forEach((visual) => lines.push(`[그림·도표 ${visual.number}]`))
       let text = p.paraText
       const blanksDesc = [...p.blanks].sort((a, b) => b.start - a.start)
       for (const b of blanksDesc) {
@@ -545,9 +607,7 @@ function buildPlainText(worksheets, title, reveal) {
       }
       lines.push(p.figure ? `[FIGURE] ${text}` : text)
     }
-    ws.visuals.filter((visual) => !visual.excluded).forEach((_, visualIdx) => {
-      lines.push(`[그림·도표 ${visualIdx + 1}]`)
-    })
+    includedVisualsAtLine(ws, ws.paragraphs.length).forEach((visual) => lines.push(`[그림·도표 ${visual.number}]`))
   })
   return lines.join('\n')
 }
@@ -563,15 +623,14 @@ function buildHtml(worksheets, title, reveal) {
           : `<span style="display:inline-block;border-bottom:1px solid #333;min-width:${Math.max(b.clean.length, 4)}ch;">&nbsp;</span>`
         text = text.slice(0, b.start) + fill + text.slice(b.end)
       }
-      if (!p.paraText.trim()) return '<div style="min-height:1.8em">&nbsp;</div>'
-      return p.figure
+      const line = !p.paraText.trim()
+        ? '<div style="min-height:1.8em">&nbsp;</div>'
+        : p.figure
         ? `<div style="border:1px dashed #999;padding:8px;margin:8px 0;">${text}</div>`
         : `<div style="min-height:1.8em">${text}</div>`
+      return `${buildHtmlVisuals(includedVisualsAtLine(ws, p.paraIdx))}${line}`
     }).join('\n')
-    const visualBody = ws.visuals
-      .filter((visual) => !visual.excluded)
-      .map((visual, visualIdx) => `<figure style="margin:20px 0;"><img src="${visual.src}" alt="그림·도표 ${visualIdx + 1}" style="display:block;max-width:100%;height:auto;margin:auto;"></figure>`)
-      .join('\n')
+    const visualBody = buildHtmlVisuals(includedVisualsAtLine(ws, ws.paragraphs.length))
     const heading = worksheets.length > 1 ? `<h2>${pageIdx + 1}페이지</h2>` : ''
     return `${heading}${pageBody}${visualBody}`
   }).join('\n')
@@ -599,6 +658,7 @@ export default function App() {
   const [userAnswersByPage, setUserAnswersByPage] = useState({})
   const [checkedByPage, setCheckedByPage] = useState({})
   const [exportFormat, setExportFormat] = useState('pdf')
+  const [printFontSize, setPrintFontSize] = useState(12)
   const [worksheetTitle, setWorksheetTitle] = useState('빈칸 학습지')
   const [fileStatus, setFileStatus] = useState('')
   const fileInputRef = useRef(null)
@@ -801,7 +861,7 @@ export default function App() {
   const editMode = studyMode === 'edit'
 
   return (
-    <div className="app">
+    <div className="app" style={{ '--print-font-size': `${printFontSize}pt` }}>
       <header className="topbar">
         <span className="brand">빈칸 학습지 생성기</span>
         <span className="brand-sub">지문을 넣으면 핵심 내용을 골라 빈칸으로 재가공합니다</span>
@@ -886,6 +946,9 @@ export default function App() {
           <div className="line-control-guide">
             줄 번호 클릭: <span className="guide-auto">자동</span> → <span className="guide-always">항상 빈칸</span> → <span className="guide-never">항상 남기기</span>
           </div>
+          <div className="print-format-note">
+            참고: 미리보기는 편집용 표시입니다. 인쇄할 때는 줄 번호와 상태색을 제외하고 원문 순서와 그림·표 위치를 유지합니다. 글자 크기에 따라 원문과 페이지 수가 달라질 수 있습니다.
+          </div>
 
           {worksheet.usedFallback && (
             <div className="fallback-note">선택한 과목에서 후보를 찾지 못해 공통 규칙으로 대체했습니다.</div>
@@ -898,21 +961,20 @@ export default function App() {
           <div className="name-row">이름 <span className="name-line" /></div>
 
           <div id="printable" className="worksheet-body manuscript">
-            {worksheet.paragraphs.map((p) => (
-              <Paragraph
-                key={p.paraIdx}
-                p={p}
-                studyMode={studyMode}
-                userAnswers={userAnswers}
-                setUserAnswer={setUserAnswer}
-                checked={checked}
-                editMode={editMode}
-                toggleManual={toggleManual}
-                cycleLineState={cycleLineState}
-                lineControlsEnabled={level !== 0}
-              />
-            ))}
-            <PageVisuals visuals={worksheet.visuals} toggleVisual={toggleVisual} />
+            <WorksheetContent
+              worksheet={worksheet}
+              toggleVisual={toggleVisual}
+              paragraphProps={{
+                studyMode,
+                userAnswers,
+                setUserAnswer,
+                checked,
+                editMode,
+                toggleManual,
+                cycleLineState,
+                lineControlsEnabled: level !== 0,
+              }}
+            />
             {worksheet.paragraphs.length === 0 && <p className="empty-msg">왼쪽에 지문을 입력하면 학습지가 생성됩니다.</p>}
           </div>
 
@@ -928,21 +990,21 @@ export default function App() {
             {allPageWorksheets.map((ws, pageIdx) => (
               <div key={pageIdx} className="print-page-block">
                 {pageIdx > 0 && <div className="print-page-label">{pageIdx + 1}페이지</div>}
-                {ws.paragraphs.map((p) => (
-                  <Paragraph
-                    key={p.paraIdx}
-                    p={p}
-                    studyMode={studyMode}
-                    userAnswers={EMPTY_OBJ}
-                    setUserAnswer={NOOP}
-                    checked={false}
-                    editMode={false}
-                    toggleManual={NOOP}
-                    cycleLineState={NOOP}
-                    lineControlsEnabled={false}
-                  />
-                ))}
-                <PageVisuals visuals={ws.visuals} toggleVisual={NOOP} interactive={false} />
+                <WorksheetContent
+                  worksheet={ws}
+                  toggleVisual={NOOP}
+                  interactive={false}
+                  paragraphProps={{
+                    studyMode,
+                    userAnswers: EMPTY_OBJ,
+                    setUserAnswer: NOOP,
+                    checked: false,
+                    editMode: false,
+                    toggleManual: NOOP,
+                    cycleLineState: NOOP,
+                    lineControlsEnabled: false,
+                  }}
+                />
               </div>
             ))}
           </div>
@@ -991,6 +1053,18 @@ export default function App() {
             ))}
           </div>
           <button className="download-btn" onClick={handleDownload}>내려받기</button>
+          <label className="print-size-control">
+            <span>인쇄 글자 크기</span>
+            <input
+              type="range"
+              min="9"
+              max="18"
+              step="1"
+              value={printFontSize}
+              onChange={(e) => setPrintFontSize(Number(e.target.value))}
+            />
+            <strong>{printFontSize}pt</strong>
+          </label>
           <div className="row-actions">
             <button className="ghost-btn" onClick={regenerate}>다시 생성</button>
             <button className="ghost-btn" onClick={() => alert('현재 설정이 저장되었습니다. (브라우저 세션 내 유지)')}>설정 저장</button>

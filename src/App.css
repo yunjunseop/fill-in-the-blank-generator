@@ -475,6 +475,14 @@
   padding: 6px 9px;
 }
 
+.print-format-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  border-left: 3px solid var(--border-strong);
+  padding: 4px 9px;
+}
+
 .guide-auto,
 .guide-always,
 .guide-never {
@@ -679,6 +687,26 @@
   margin: 6px 0;
 }
 
+.print-size-control {
+  display: grid;
+  grid-template-columns: auto minmax(90px, 1fr) 38px;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.print-size-control input {
+  width: 100%;
+  accent-color: var(--green);
+}
+
+.print-size-control strong {
+  color: var(--ink);
+  text-align: right;
+}
+
 .row-actions {
   display: flex;
   gap: 8px;
@@ -786,6 +814,7 @@
   .source-panel,
   .worksheet-toolbar,
   .line-control-guide,
+  .print-format-note,
   .fallback-note,
   .controls-grid,
   .footer-note,
@@ -806,6 +835,36 @@
   .candidate-chip {
     border-bottom: none;
   }
+  .print-all-pages {
+    font-size: var(--print-font-size, 12pt);
+    line-height: 1.7;
+  }
+  .print-all-pages .ws-line {
+    gap: 0;
+    padding-left: 0;
+    margin-left: 0;
+    border-left: none !important;
+    background: transparent !important;
+  }
+  .print-all-pages .ws-line-num {
+    display: none;
+  }
+  .print-all-pages .blank-input {
+    font-size: inherit;
+  }
+  .print-all-pages .figure-box {
+    border: none;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+  }
+  .print-all-pages .figure-label {
+    display: none;
+  }
+  .print-all-pages .page-visuals,
+  .print-all-pages .page-visual-row {
+    break-inside: avoid;
+  }
   .page-visual-row {
     grid-template-columns: 1fr;
     border: none;
@@ -818,13 +877,7 @@
   .print-all-pages {
     display: block;
   }
-  .print-page-block + .print-page-block {
-    page-break-before: always;
-  }
   .print-page-label {
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--text-dim);
-    margin: 0 0 10px;
+    display: none;
   }
 }
