@@ -1055,13 +1055,17 @@
   }
   .print-all-pages.quality-print .blank-input,
   .print-all-pages.quality-print .blank-reveal {
-    border: none !important;
     box-shadow: none;
+  }
+  .print-all-pages.quality-print .blank-reveal {
+    border: none !important;
   }
   .print-all-pages.quality-print .blank-input {
     appearance: none;
     background: #fff;
     padding: 0;
+    border: none !important;
+    border-bottom: 0.08mm solid rgba(23, 25, 28, 0.38) !important;
   }
   .print-all-pages .ws-heading {
     margin: 0.35em 0 0.15em;
