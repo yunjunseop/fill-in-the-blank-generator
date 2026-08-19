@@ -242,6 +242,20 @@
   cursor: wait;
 }
 
+.visual-all-btn {
+  border: 1px solid var(--red);
+  background: #fff;
+  color: var(--red);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.visual-all-btn:hover {
+  background: var(--red-bg);
+}
+
 .fallback-note {
   font-size: 12px;
   color: var(--red);
@@ -739,6 +753,23 @@
   gap: 7px;
 }
 
+.quality-layout-setting {
+  margin-top: 12px;
+}
+
+.print-layout-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+@media (max-width: 720px) {
+  .print-mode-grid,
+  .print-layout-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .print-mode-btn {
   min-width: 0;
   border: 1px solid var(--border-strong);
@@ -802,6 +833,16 @@
   color: var(--ink);
   font-family: var(--mono, monospace);
   text-align: right;
+}
+
+.duplex-note {
+  margin: 9px 0 0;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: var(--panel-alt);
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .download-btn {
@@ -950,8 +991,13 @@
   @page originalPage {
     margin: 0;
   }
-  @page qualityPage {
+  @page qualityPortrait {
+    size: A4 portrait;
     margin: 14mm 16mm;
+  }
+  @page qualityLandscape {
+    size: A4 landscape;
+    margin: 12mm 14mm;
   }
   .topbar,
   .source-panel,
@@ -986,9 +1032,17 @@
     page: originalPage;
   }
   .print-all-pages.quality-print {
-    page: qualityPage;
     font-size: var(--quality-print-font-size, 12pt);
     line-height: 1.75;
+    orphans: 2;
+    widows: 2;
+  }
+  .print-all-pages.quality-print.quality-portrait {
+    page: qualityPortrait;
+  }
+  .print-all-pages.quality-print.quality-landscape,
+  .print-all-pages.quality-print.quality-landscape-split {
+    page: qualityLandscape;
   }
   .print-all-pages .ws-line {
     gap: 0;
@@ -1058,6 +1112,17 @@
   .print-page-block.quality-layout:last-child {
     break-after: auto;
     page-break-after: auto;
+  }
+  .print-all-pages.quality-landscape-split .print-page-block.quality-layout {
+    column-count: 2;
+    column-gap: 12mm;
+    column-rule: 0.2mm solid #d8d3c0;
+    column-fill: balance;
+  }
+  .print-all-pages.quality-landscape-split .ws-line,
+  .print-all-pages.quality-landscape-split .page-visuals,
+  .print-all-pages.quality-landscape-split .figure-box {
+    break-inside: avoid-column;
   }
   .print-page-label {
     display: none;

@@ -427,6 +427,12 @@ const FORMATS = [
   { id: 'md', label: 'MD' },
 ]
 
+const QUALITY_PRINT_LAYOUTS = [
+  { id: 'portrait', label: '세로 1단', description: '일반 세로 용지' },
+  { id: 'landscape', label: '가로 1단', description: '넓은 한 단 구성' },
+  { id: 'landscape-split', label: '가로 2분할', description: '가로 용지를 좌우 두 단으로 분할' },
+]
+
 function stripEdgePunct(raw, start) {
   const leadMatch = raw.match(/^[([{「『"'"'\-·]+/)
   const lead = leadMatch ? leadMatch[0].length : 0
@@ -1008,6 +1014,7 @@ export default function App() {
   const [exportFormat, setExportFormat] = useState('pdf')
   const [printMode, setPrintMode] = useState('original')
   const [qualityPrintFontSize, setQualityPrintFontSize] = useState(12)
+  const [qualityPrintLayout, setQualityPrintLayout] = useState('portrait')
   const [worksheetTitle, setWorksheetTitle] = useState('빈칸 학습지')
   const [fileStatus, setFileStatus] = useState('')
   const [isPreparingPrint, setIsPreparingPrint] = useState(false)
@@ -1078,6 +1085,13 @@ export default function App() {
   const totalBlankCount = allPageWorksheets.reduce((s, w) => s + w.blankCount, 0)
   const hasOriginalPrintPages = allPageWorksheets.length > 0 && allPageWorksheets.every((worksheetPage) => worksheetPage.printPage)
   const effectivePrintMode = printMode === 'original' && hasOriginalPrintPages ? 'original' : 'quality'
+  const qualityPrintLayoutObj = QUALITY_PRINT_LAYOUTS.find((layoutOption) => layoutOption.id === qualityPrintLayout)
+  const totalVisualCount = Object.values(sourceVisualsByPage).reduce((sum, visuals) => sum + visuals.length, 0)
+  const excludedVisualCount = Object.entries(sourceVisualsByPage).reduce(
+    (sum, [page, visuals]) => sum + visuals.filter((visual) => excludedVisualsByPage[page]?.has(visual.id)).length,
+    0,
+  )
+  const allVisualsExcluded = totalVisualCount > 0 && excludedVisualCount === totalVisualCount
 
   const writtenCount = Object.values(userAnswers).filter((v) => v && v.trim()).length
   const correctCount = worksheet.answers.filter((a) => (userAnswers[a.key] || '').trim() === a.clean).length
@@ -1141,6 +1155,16 @@ export default function App() {
       else next.add(visualId)
       return { ...prev, [currentPage]: next }
     })
+  }
+
+  function toggleAllVisuals() {
+    if (allVisualsExcluded) {
+      setExcludedVisualsByPage(Object.fromEntries(Object.keys(sourceVisualsByPage).map((page) => [page, new Set()])))
+      return
+    }
+    setExcludedVisualsByPage(Object.fromEntries(
+      Object.entries(sourceVisualsByPage).map(([page, visuals]) => [page, new Set(visuals.map((visual) => visual.id))]),
+    ))
   }
 
   function setUserAnswer(key, val) {
@@ -1360,6 +1384,11 @@ export default function App() {
             >
               정답 확인
             </button>
+            {totalVisualCount > 0 && (
+              <button className="visual-all-btn" onClick={toggleAllVisuals}>
+                {allVisualsExcluded ? '그림·도표 모두 다시 포함' : `그림·도표 모두 제거 (${totalVisualCount})`}
+              </button>
+            )}
             <button className="print-btn" onClick={preparePrint} disabled={isPreparingPrint}>
               {isPreparingPrint ? '인쇄 준비 중…' : effectivePrintMode === 'original' ? '원문 형식 인쇄' : '가독성 우선 인쇄'}
             </button>
@@ -1370,7 +1399,7 @@ export default function App() {
           <div className="print-format-note">
             {effectivePrintMode === 'original'
               ? '원문 형식 인쇄: 원문의 글자 크기·단 구성·그림·표 위치와 페이지 수를 유지합니다. 원본 위에 빈칸을 덮으므로 일부 글자가 미세하게 남을 수 있습니다.'
-              : `가독성 우선 인쇄: 원문이 2단이어도 한 단으로 바꾸고, 본문과 빈칸을 ${qualityPrintFontSize}pt로 다시 조판합니다. 원문과 페이지 수·줄바꿈은 달라질 수 있습니다.`}
+              : `가독성 우선 인쇄: ${qualityPrintLayoutObj.label}, ${qualityPrintFontSize}pt로 다시 조판합니다. 원문과 페이지 수·줄바꿈은 달라질 수 있습니다.`}
           </div>
 
           {worksheet.usedFallback && (
@@ -1402,7 +1431,7 @@ export default function App() {
           </div>
 
           <div
-            className={`print-all-pages ${effectivePrintMode}-print`}
+            className={`print-all-pages ${effectivePrintMode}-print${effectivePrintMode === 'quality' ? ` quality-${qualityPrintLayout}` : ''}`}
             style={effectivePrintMode === 'quality' ? { '--quality-print-font-size': `${qualityPrintFontSize}pt` } : undefined}
           >
             {effectivePrintMode === 'quality' && (
@@ -1563,18 +1592,36 @@ export default function App() {
             </div>
             {!hasOriginalPrintPages && <p className="print-setting-help">PDF 원본 페이지가 없으므로 가독성 우선 인쇄를 사용합니다.</p>}
             {effectivePrintMode === 'quality' && (
-              <label className="font-size-control">
-                <span>인쇄 글자 크기</span>
-                <input
-                  type="range"
-                  min="9"
-                  max="20"
-                  step="0.5"
-                  value={qualityPrintFontSize}
-                  onChange={(event) => setQualityPrintFontSize(Number(event.target.value))}
-                />
-                <output>{qualityPrintFontSize}pt</output>
-              </label>
+              <>
+                <div className="quality-layout-setting">
+                  <div className="print-setting-label">용지 구성</div>
+                  <div className="print-layout-grid">
+                    {QUALITY_PRINT_LAYOUTS.map((layoutOption) => (
+                      <button
+                        key={layoutOption.id}
+                        className={`print-mode-btn${qualityPrintLayout === layoutOption.id ? ' active' : ''}`}
+                        onClick={() => setQualityPrintLayout(layoutOption.id)}
+                      >
+                        <strong>{layoutOption.label}</strong>
+                        <span>{layoutOption.description}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <label className="font-size-control">
+                  <span>인쇄 글자 크기</span>
+                  <input
+                    type="range"
+                    min="9"
+                    max="20"
+                    step="0.5"
+                    value={qualityPrintFontSize}
+                    onChange={(event) => setQualityPrintFontSize(Number(event.target.value))}
+                  />
+                  <output>{qualityPrintFontSize}pt</output>
+                </label>
+                <p className="duplex-note">양면 인쇄 호환 · 인쇄 창에서 ‘양면 인쇄’를 선택하면 페이지 순서대로 앞뒤 출력됩니다.</p>
+              </>
             )}
           </div>
           <button className="download-btn" onClick={handleDownload}>내려받기</button>
