@@ -706,6 +706,21 @@
   color: var(--text-dim);
 }
 
+.special-option-panel {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-alt);
+}
+
+.special-option-title {
+  margin-bottom: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
 .print-settings {
   margin: 12px 0 8px;
   padding-top: 10px;
@@ -1014,19 +1029,6 @@
   .print-all-pages .page-visuals,
   .print-all-pages .page-visual-row {
     break-inside: avoid;
-  }
-  .print-two-columns {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 8mm;
-    align-items: start;
-  }
-  .print-column {
-    min-width: 0;
-  }
-  .print-column:first-child {
-    border-right: 1px solid #d8d3c0;
-    padding-right: 4mm;
   }
   .page-visual-row {
     grid-template-columns: 1fr;
