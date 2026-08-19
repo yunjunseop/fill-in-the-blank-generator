@@ -13,23 +13,40 @@ async function extractPdfPages(file) {
   const pdf = await pdfjsLib.getDocument({ data: buffer }).promise
   const pages = []
   const visualsByPage = {}
+  const layoutsByPage = {}
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i)
     const viewport = page.getViewport({ scale: 1.5 })
     const content = await page.getTextContent()
-    const { text, lineTops } = extractPdfPageText(content.items, viewport)
+    const { text, lineTops, layout } = extractPdfPageText(content.items, viewport)
     pages.push(text)
+    layoutsByPage[i - 1] = layout
     try {
       const visuals = await extractPdfPageVisuals(page, viewport)
       visualsByPage[i - 1] = visuals.map((visual) => {
-        const firstLineBelow = lineTops.findIndex((lineTop) => Number.isFinite(lineTop) && lineTop > visual.order)
-        return { ...visual, insertBeforeLine: firstLineBelow === -1 ? lineTops.length : firstLineBelow }
+        const visualColumn = layout.columnCount === 2 && visual.width < viewport.width * 0.65
+          ? visual.centerX < viewport.width / 2 ? 1 : 2
+          : 0
+        const firstLineBelow = lineTops.findIndex((lineTop, lineIndex) => (
+          Number.isFinite(lineTop)
+          && (visualColumn === 0 || layout.lineColumns[lineIndex] === visualColumn)
+          && lineTop > visual.order
+        ))
+        const columnLineIndexes = layout.lineColumns
+          .map((column, lineIndex) => (visualColumn === 0 || column === visualColumn ? lineIndex : -1))
+          .filter((lineIndex) => lineIndex >= 0)
+        const fallbackLine = columnLineIndexes.length ? columnLineIndexes.at(-1) + 1 : lineTops.length
+        return {
+          ...visual,
+          column: visualColumn,
+          insertBeforeLine: firstLineBelow === -1 ? fallbackLine : firstLineBelow,
+        }
       })
     } catch {
       visualsByPage[i - 1] = []
     }
   }
-  return { pages, visualsByPage }
+  return { pages, visualsByPage, layoutsByPage }
 }
 
 async function extractPdfPageVisuals(page, viewport) {
@@ -74,6 +91,7 @@ async function extractPdfPageVisuals(page, viewport) {
       width: crop.width,
       height: crop.height,
       order: top,
+      centerX: left + width / 2,
     })
   }
 
@@ -83,83 +101,148 @@ async function extractPdfPageVisuals(page, viewport) {
 }
 
 function extractPdfPageText(items, viewport) {
+  const pageWidth = viewport.width
+  const middle = pageWidth / 2
+  const positionedItems = items
+    .filter((item) => 'str' in item && item.str.trim())
+    .map((item) => {
+      const x = item.transform?.[4] || 0
+      const y = item.transform?.[5] || 0
+      const height = Math.abs(item.height || item.transform?.[3] || 0)
+      const [viewportX, baselineY] = viewport.convertToViewportPoint(x, y)
+      const [, capY] = viewport.convertToViewportPoint(x, y + height)
+      return {
+        text: item.str,
+        x: viewportX,
+        top: Math.min(baselineY, capY),
+        width: Math.max(Math.abs((item.width || 0) * viewport.scale), 1),
+        height: Math.max(Math.abs(baselineY - capY), 1),
+      }
+    })
+    .sort((a, b) => a.top - b.top || a.x - b.x)
+
+  const rowBands = []
+  for (const item of positionedItems) {
+    const band = rowBands.findLast((candidate) => Math.abs(candidate.top - item.top) <= Math.max(2, candidate.height * 0.45, item.height * 0.45))
+    if (band) {
+      band.items.push(item)
+      band.top = (band.top * (band.items.length - 1) + item.top) / band.items.length
+      band.height = Math.max(band.height, item.height)
+    } else {
+      rowBands.push({ items: [item], top: item.top, height: item.height })
+    }
+  }
+
+  const segments = []
+  for (const band of rowBands) {
+    const sorted = band.items.sort((a, b) => a.x - b.x)
+    let segmentItems = []
+    for (const item of sorted) {
+      const previous = segmentItems.at(-1)
+      const gap = previous ? item.x - (previous.x + previous.width) : 0
+      const crossesPageMiddle = previous && previous.x + previous.width < middle && item.x > middle
+      const splitAtGutter = crossesPageMiddle && gap > Math.max(pageWidth * 0.035, band.height * 2.5)
+      if (splitAtGutter) {
+        segments.push(buildPdfLineSegment(segmentItems, band.top, band.height))
+        segmentItems = []
+      }
+      segmentItems.push(item)
+    }
+    if (segmentItems.length) segments.push(buildPdfLineSegment(segmentItems, band.top, band.height))
+  }
+
+  const leftCandidates = segments.filter((line) => line.centerX < middle && line.xMax < pageWidth * 0.59)
+  const rightCandidates = segments.filter((line) => line.centerX >= middle && line.xMin > pageWidth * 0.41)
+  const leftRange = getVerticalRange(leftCandidates)
+  const rightRange = getVerticalRange(rightCandidates)
+  const overlap = Math.min(leftRange.max, rightRange.max) - Math.max(leftRange.min, rightRange.min)
+  const shorterRange = Math.min(leftRange.max - leftRange.min, rightRange.max - rightRange.min)
+  const hasTwoColumns = leftCandidates.length >= 4
+    && rightCandidates.length >= 4
+    && shorterRange > 0
+    && overlap / shorterRange > 0.45
+
+  let orderedLines
+  if (hasTwoColumns) {
+    const commonColumnTop = Math.max(leftRange.min, rightRange.min)
+    const leftBody = leftCandidates.filter((line) => line.top >= commonColumnTop - line.height * 1.5)
+    const rightBody = rightCandidates.filter((line) => line.top >= commonColumnTop - line.height * 1.5)
+    const leftSet = new Set(leftBody)
+    const rightSet = new Set(rightBody)
+    const headers = segments.filter((line) => !leftSet.has(line) && !rightSet.has(line) && line.top < commonColumnTop)
+    const footers = segments.filter((line) => !leftSet.has(line) && !rightSet.has(line) && line.top >= commonColumnTop)
+    orderedLines = [
+      ...headers.sort(sortPdfLines).map((line) => ({ ...line, column: 0 })),
+      ...leftBody.sort(sortPdfLines).map((line) => ({ ...line, column: 1 })),
+      ...rightBody.sort(sortPdfLines).map((line) => ({ ...line, column: 2 })),
+      ...footers.sort(sortPdfLines).map((line) => ({ ...line, column: 0 })),
+    ]
+  } else {
+    orderedLines = segments.sort(sortPdfLines).map((line) => ({ ...line, column: 0 }))
+  }
+
   const lines = []
   const lineTops = []
-  let line = ''
-  let lineTop = null
-  let previous = null
-
-  const pushLine = (lineBreaks = 1) => {
-    lines.push(line.trimEnd())
-    lineTops.push(lineTop)
-    for (let i = 1; i < lineBreaks; i++) {
-      lines.push('')
-      lineTops.push(null)
-    }
-    line = ''
-    lineTop = null
-  }
-
-  for (const item of items) {
-    if (!('str' in item)) continue
-
-    const text = item.str
-    const x = item.transform?.[4]
-    const y = item.transform?.[5]
-    const height = Math.abs(item.height || item.transform?.[3] || 0)
-    const itemTop = Number.isFinite(x) && Number.isFinite(y)
-      ? Math.min(viewport.convertToViewportPoint(x, y)[1], viewport.convertToViewportPoint(x, y + height)[1])
-      : null
-
-    if (previous) {
-      const lineHeight = Math.max(previous.height, height, 1)
-      const verticalGap = Number.isFinite(y) && Number.isFinite(previous.y) ? Math.abs(y - previous.y) : 0
-      const previousEndX = previous.x + previous.width
-      const returnedToLineStart = Number.isFinite(x) && Number.isFinite(previousEndX)
-        ? x <= previous.x + lineHeight * 1.5 || x < previousEndX - lineHeight * 0.5
-        : false
-      const startsNewLine = previous.hasEOL || (verticalGap > lineHeight * 0.45 && returnedToLineStart)
-
-      if (startsNewLine) {
-        pushLine(verticalGap > lineHeight * 1.7 ? 2 : 1)
-      } else if (line && text && !/\s$/.test(line) && !/^\s/.test(text)) {
-        const horizontalGap = Number.isFinite(x) && Number.isFinite(previousEndX) ? x - previousEndX : 0
-        const averageCharacterWidth = previous.text.length ? previous.width / previous.text.length : 0
-        if (horizontalGap > Math.max(0.8, averageCharacterWidth * 0.18)) {
-          const spaceWidth = Math.max(averageCharacterWidth, height * 0.45, 1)
-          const spaceCount = Math.min(10, Math.max(1, Math.round(horizontalGap / spaceWidth)))
-          line += ' '.repeat(spaceCount)
-        }
+  const lineColumns = []
+  let previousLine = null
+  for (const line of orderedLines) {
+    if (previousLine && previousLine.column === line.column) {
+      const verticalGap = line.top - previousLine.top
+      if (verticalGap > Math.max(previousLine.height, line.height) * 1.8) {
+        lines.push('')
+        lineTops.push(null)
+        lineColumns.push(line.column)
       }
     }
+    lines.push(line.text)
+    lineTops.push(line.top)
+    lineColumns.push(line.column)
+    previousLine = line
+  }
 
-    lineTop = lineTop === null ? itemTop : Number.isFinite(itemTop) ? Math.min(lineTop, itemTop) : lineTop
-    line += text
-    previous = {
-      text,
-      x: Number.isFinite(x) ? x : 0,
-      y: Number.isFinite(y) ? y : 0,
-      width: Math.abs(item.width || 0),
-      height,
-      hasEOL: Boolean(item.hasEOL),
+  return {
+    text: lines.join('\n'),
+    lineTops,
+    layout: { columnCount: hasTwoColumns ? 2 : 1, lineColumns },
+  }
+}
+
+function buildPdfLineSegment(items, top, height) {
+  let text = ''
+  let previous = null
+  for (const item of items) {
+    if (previous && text && !/\s$/.test(text) && !/^\s/.test(item.text)) {
+      const gap = item.x - (previous.x + previous.width)
+      const averageCharacterWidth = previous.text.length ? previous.width / previous.text.length : 0
+      if (gap > Math.max(0.8, averageCharacterWidth * 0.18)) {
+        const spaceWidth = Math.max(averageCharacterWidth, height * 0.45, 1)
+        text += ' '.repeat(Math.min(10, Math.max(1, Math.round(gap / spaceWidth))))
+      }
     }
+    text += item.text
+    previous = item
   }
+  const xMin = Math.min(...items.map((item) => item.x))
+  const xMax = Math.max(...items.map((item) => item.x + item.width))
+  return { text: text.trimEnd(), top, height, xMin, xMax, centerX: (xMin + xMax) / 2 }
+}
 
-  if (line || lines.length === 0) pushLine()
-  while (lines.length && !lines[0].trim()) {
-    lines.shift()
-    lineTops.shift()
+function getVerticalRange(lines) {
+  if (!lines.length) return { min: Infinity, max: -Infinity }
+  return {
+    min: Math.min(...lines.map((line) => line.top)),
+    max: Math.max(...lines.map((line) => line.top + line.height)),
   }
-  while (lines.length && !lines.at(-1).trim()) {
-    lines.pop()
-    lineTops.pop()
-  }
-  return { text: lines.join('\n'), lineTops }
+}
+
+function sortPdfLines(a, b) {
+  return a.top - b.top || a.xMin - b.xMin
 }
 
 const EMPTY_SET = new Set()
 const EMPTY_OBJ = {}
 const EMPTY_ARRAY = []
+const DEFAULT_LAYOUT = { columnCount: 1, lineColumns: EMPTY_ARRAY }
 const NOOP = () => {}
 
 const LEVELS = [
@@ -251,7 +334,7 @@ function spanKey(paraIdx, start) {
 
 const LINE_BLANK_MATCH = (c) => c.length >= 2 && (HANGUL.test(c) || /\d/.test(c))
 
-function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, visuals = [], excludedVisuals = EMPTY_SET }) {
+function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, visuals = [], excludedVisuals = EMPTY_SET, layout = DEFAULT_LAYOUT }) {
   const paragraphs = sourceText
     ? sourceText.replace(/\r\n?/g, '\n').split('\n')
     : []
@@ -301,7 +384,7 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
     }
     kept.sort((a, b) => a.start - b.start)
 
-    return { paraIdx, paraText, figure, lineState, words, pool: kept }
+    return { paraIdx, paraText, figure, lineState, words, pool: kept, column: layout.lineColumns[paraIdx] || 0 }
   })
 
   const density = level.density
@@ -374,6 +457,7 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
     usedFallback,
     categoryLabel,
     visuals: visuals.map((visual) => ({ ...visual, excluded: excludedVisuals.has(visual.id) })),
+    layout,
   }
 }
 
@@ -471,24 +555,74 @@ function PageVisuals({ visuals, toggleVisual, interactive = true }) {
   )
 }
 
-function WorksheetContent({ worksheet, paragraphProps, toggleVisual, interactive = true }) {
+function WorksheetContent({ worksheet, paragraphProps, toggleVisual, interactive = true, paragraphs = worksheet.paragraphs, visuals = worksheet.visuals }) {
   const visualsByLine = new Map()
-  for (const visual of worksheet.visuals) {
-    const lineIndex = Math.min(Math.max(visual.insertBeforeLine ?? worksheet.paragraphs.length, 0), worksheet.paragraphs.length)
+  const paragraphIndexes = new Set(paragraphs.map((p) => p.paraIdx))
+  const placedVisualIds = new Set()
+  for (const visual of visuals) {
+    const lineIndex = visual.insertBeforeLine ?? worksheet.paragraphs.length
+    if (!paragraphIndexes.has(lineIndex)) continue
     const grouped = visualsByLine.get(lineIndex) || []
     grouped.push(visual)
     visualsByLine.set(lineIndex, grouped)
+    placedVisualIds.add(visual.id)
   }
+  const trailingVisuals = visuals.filter((visual) => !placedVisualIds.has(visual.id))
 
   return (
     <>
-      {worksheet.paragraphs.map((p) => (
+      {paragraphs.map((p) => (
         <Fragment key={p.paraIdx}>
           <PageVisuals visuals={visualsByLine.get(p.paraIdx) || EMPTY_ARRAY} toggleVisual={toggleVisual} interactive={interactive} />
           <Paragraph p={p} {...paragraphProps} />
         </Fragment>
       ))}
-      <PageVisuals visuals={visualsByLine.get(worksheet.paragraphs.length) || EMPTY_ARRAY} toggleVisual={toggleVisual} interactive={interactive} />
+      <PageVisuals visuals={trailingVisuals} toggleVisual={toggleVisual} interactive={interactive} />
+    </>
+  )
+}
+
+function PrintWorksheetContent({ worksheet, paragraphProps }) {
+  if (worksheet.layout.columnCount !== 2) {
+    return <WorksheetContent worksheet={worksheet} paragraphProps={paragraphProps} toggleVisual={NOOP} interactive={false} />
+  }
+
+  const columnParagraphs = worksheet.paragraphs.filter((p) => p.column === 1 || p.column === 2)
+  const firstColumnLine = columnParagraphs.length ? Math.min(...columnParagraphs.map((p) => p.paraIdx)) : 0
+  const lastColumnLine = columnParagraphs.length ? Math.max(...columnParagraphs.map((p) => p.paraIdx)) : worksheet.paragraphs.length
+  const headerParagraphs = worksheet.paragraphs.filter((p) => p.column === 0 && p.paraIdx < firstColumnLine)
+  const footerParagraphs = worksheet.paragraphs.filter((p) => p.column === 0 && p.paraIdx > lastColumnLine)
+  const middleFullParagraphs = worksheet.paragraphs.filter((p) => p.column === 0 && p.paraIdx >= firstColumnLine && p.paraIdx <= lastColumnLine)
+  const headerVisuals = worksheet.visuals.filter((visual) => visual.column === 0 && visual.insertBeforeLine <= firstColumnLine)
+  const footerVisuals = worksheet.visuals.filter((visual) => visual.column === 0 && visual.insertBeforeLine > firstColumnLine)
+
+  return (
+    <>
+      <WorksheetContent worksheet={worksheet} paragraphs={headerParagraphs} visuals={headerVisuals} paragraphProps={paragraphProps} toggleVisual={NOOP} interactive={false} />
+      <div className="print-two-columns">
+        <div className="print-column">
+          <WorksheetContent
+            worksheet={worksheet}
+            paragraphs={worksheet.paragraphs.filter((p) => p.column === 1)}
+            visuals={worksheet.visuals.filter((visual) => visual.column === 1)}
+            paragraphProps={paragraphProps}
+            toggleVisual={NOOP}
+            interactive={false}
+          />
+        </div>
+        <div className="print-column">
+          <WorksheetContent
+            worksheet={worksheet}
+            paragraphs={worksheet.paragraphs.filter((p) => p.column === 2)}
+            visuals={worksheet.visuals.filter((visual) => visual.column === 2)}
+            paragraphProps={paragraphProps}
+            toggleVisual={NOOP}
+            interactive={false}
+          />
+        </div>
+      </div>
+      <WorksheetContent worksheet={worksheet} paragraphs={middleFullParagraphs} visuals={EMPTY_ARRAY} paragraphProps={paragraphProps} toggleVisual={NOOP} interactive={false} />
+      <WorksheetContent worksheet={worksheet} paragraphs={footerParagraphs} visuals={footerVisuals} paragraphProps={paragraphProps} toggleVisual={NOOP} interactive={false} />
     </>
   )
 }
@@ -645,6 +779,7 @@ export default function App() {
   const [level, setLevel] = useState(2)
   const [selectedCategories, setSelectedCategories] = useState(new Set(['common']))
   const [sourceVisualsByPage, setSourceVisualsByPage] = useState({})
+  const [sourceLayoutsByPage, setSourceLayoutsByPage] = useState({})
   const [excludedVisualsByPage, setExcludedVisualsByPage] = useState({})
   const [alwaysBlankLinesByPage, setAlwaysBlankLinesByPage] = useState({})
   const [neverBlankLinesByPage, setNeverBlankLinesByPage] = useState({})
@@ -670,6 +805,7 @@ export default function App() {
   const manualInclude = manualIncludeByPage[currentPage] || EMPTY_SET
   const manualExclude = manualExcludeByPage[currentPage] || EMPTY_SET
   const currentVisuals = sourceVisualsByPage[currentPage] || EMPTY_ARRAY
+  const currentLayout = sourceLayoutsByPage[currentPage] || DEFAULT_LAYOUT
   const excludedVisuals = excludedVisualsByPage[currentPage] || EMPTY_SET
   const userAnswers = userAnswersByPage[currentPage] || EMPTY_OBJ
   const checked = checkedByPage[currentPage] || false
@@ -688,8 +824,9 @@ export default function App() {
         manualExclude,
         visuals: currentVisuals,
         excludedVisuals,
+        layout: currentLayout,
       }),
-    [currentText, levelObj, selectedCategories, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, currentVisuals, excludedVisuals],
+    [currentText, levelObj, selectedCategories, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, currentVisuals, excludedVisuals, currentLayout],
   )
 
   const allPageWorksheets = useMemo(
@@ -707,9 +844,10 @@ export default function App() {
           manualExclude: manualExcludeByPage[i] || EMPTY_SET,
           visuals: sourceVisualsByPage[i] || [],
           excludedVisuals: excludedVisualsByPage[i] || EMPTY_SET,
+          layout: sourceLayoutsByPage[i] || DEFAULT_LAYOUT,
         }),
       ),
-    [sourcePages, levelObj, selectedCategories, alwaysBlankLinesByPage, neverBlankLinesByPage, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage, sourceVisualsByPage, excludedVisualsByPage],
+    [sourcePages, levelObj, selectedCategories, alwaysBlankLinesByPage, neverBlankLinesByPage, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage, sourceVisualsByPage, excludedVisualsByPage, sourceLayoutsByPage],
   )
 
   const totalBlankCount = allPageWorksheets.reduce((s, w) => s + w.blankCount, 0)
@@ -793,9 +931,10 @@ export default function App() {
     if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
       setFileStatus('PDF에서 텍스트와 그림·도표를 추출하는 중…')
       try {
-        const { pages, visualsByPage } = await extractPdfPages(file)
+        const { pages, visualsByPage, layoutsByPage } = await extractPdfPages(file)
         resetPageState()
         setSourceVisualsByPage(visualsByPage)
+        setSourceLayoutsByPage(layoutsByPage)
         setSourcePages(pages.length ? pages : [''])
         setCurrentPage(0)
         setFileStatus('')
@@ -808,6 +947,7 @@ export default function App() {
     reader.onload = () => {
       resetPageState()
       setSourceVisualsByPage({})
+      setSourceLayoutsByPage({})
       setSourcePages([String(reader.result || '')])
       setCurrentPage(0)
     }
@@ -875,6 +1015,7 @@ export default function App() {
             <span className="meta">
               {currentText.length}자 · {currentText.split(/\n+/).filter((l) => l.trim()).length}줄
               {sourcePages.length > 1 ? ` · ${currentPage + 1}/${sourcePages.length}페이지` : ''}
+              {currentLayout.columnCount === 2 ? ' · 2단 인식' : ''}
             </span>
           </div>
           {sourcePages.length > 1 && (
@@ -947,7 +1088,7 @@ export default function App() {
             줄 번호 클릭: <span className="guide-auto">자동</span> → <span className="guide-always">항상 빈칸</span> → <span className="guide-never">항상 남기기</span>
           </div>
           <div className="print-format-note">
-            참고: 미리보기는 편집용 표시입니다. 인쇄할 때는 줄 번호와 상태색을 제외하고 원문 순서와 그림·표 위치를 유지합니다. 글자 크기에 따라 원문과 페이지 수가 달라질 수 있습니다.
+            참고: 미리보기는 편집용 표시입니다. 인쇄할 때는 줄 번호와 상태색을 제외하고 원문 순서와 그림·표 위치를 유지하며, 2단 원문은 2단으로 복원합니다. 글자 크기에 따라 원문과 페이지 수가 달라질 수 있습니다.
           </div>
 
           {worksheet.usedFallback && (
@@ -990,10 +1131,8 @@ export default function App() {
             {allPageWorksheets.map((ws, pageIdx) => (
               <div key={pageIdx} className="print-page-block">
                 {pageIdx > 0 && <div className="print-page-label">{pageIdx + 1}페이지</div>}
-                <WorksheetContent
+                <PrintWorksheetContent
                   worksheet={ws}
-                  toggleVisual={NOOP}
-                  interactive={false}
                   paragraphProps={{
                     studyMode,
                     userAnswers: EMPTY_OBJ,

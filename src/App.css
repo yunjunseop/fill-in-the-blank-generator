@@ -865,6 +865,19 @@
   .print-all-pages .page-visual-row {
     break-inside: avoid;
   }
+  .print-two-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8mm;
+    align-items: start;
+  }
+  .print-column {
+    min-width: 0;
+  }
+  .print-column:first-child {
+    border-right: 1px solid #d8d3c0;
+    padding-right: 4mm;
+  }
   .page-visual-row {
     grid-template-columns: 1fr;
     border: none;
