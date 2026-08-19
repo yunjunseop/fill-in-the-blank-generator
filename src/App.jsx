@@ -17,7 +17,7 @@ async function extractPdfPages(file) {
   const printPagesByPage = {}
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i)
-    const viewport = page.getViewport({ scale: 2 })
+    const viewport = page.getViewport({ scale: 1.5 })
     const content = await page.getTextContent()
     const { text, lineTops, layout } = extractPdfPageText(content.items, viewport)
     pages.push(text)
@@ -60,6 +60,11 @@ async function extractPdfPageVisuals(page, viewport) {
   if (!context) return { visuals: [], printPage: null }
 
   await page.render({ canvas, canvasContext: context, viewport, recordImages: true }).promise
+  const printPage = {
+    src: canvas.toDataURL('image/jpeg', 0.96),
+    width: canvas.width,
+    height: canvas.height,
+  }
   const coordinates = page.imageCoordinates || []
   const visuals = []
   const seen = new Set()
@@ -67,6 +72,7 @@ async function extractPdfPageVisuals(page, viewport) {
   for (let i = 0; i + 5 < coordinates.length && visuals.length < 12; i += 6) {
     const xs = [coordinates[i], coordinates[i + 2], coordinates[i + 4]]
     const ys = [coordinates[i + 1], coordinates[i + 3], coordinates[i + 5]]
+    if (![...xs, ...ys].every(Number.isFinite)) continue
     const left = Math.max(0, Math.floor(Math.min(...xs) * canvas.width))
     const top = Math.max(0, Math.floor(Math.min(...ys) * canvas.height))
     const right = Math.min(canvas.width, Math.ceil(Math.max(...xs) * canvas.width))
@@ -79,25 +85,29 @@ async function extractPdfPageVisuals(page, viewport) {
     if (seen.has(boxKey)) continue
     seen.add(boxKey)
 
-    const maxWidth = 1000
-    const scale = Math.min(1, maxWidth / width)
-    const crop = document.createElement('canvas')
-    crop.width = Math.max(1, Math.round(width * scale))
-    crop.height = Math.max(1, Math.round(height * scale))
-    const cropContext = crop.getContext('2d', { alpha: false })
-    if (!cropContext) continue
-    cropContext.fillStyle = '#fff'
-    cropContext.fillRect(0, 0, crop.width, crop.height)
-    cropContext.drawImage(canvas, left, top, width, height, 0, 0, crop.width, crop.height)
-    visuals.push({
-      src: crop.toDataURL('image/jpeg', 0.9),
-      width: crop.width,
-      height: crop.height,
-      sourceWidth: width,
-      sourceHeight: height,
-      order: top,
-      centerX: left + width / 2,
-    })
+    try {
+      const maxWidth = 1000
+      const scale = Math.min(1, maxWidth / width)
+      const crop = document.createElement('canvas')
+      crop.width = Math.max(1, Math.round(width * scale))
+      crop.height = Math.max(1, Math.round(height * scale))
+      const cropContext = crop.getContext('2d', { alpha: false })
+      if (!cropContext) continue
+      cropContext.fillStyle = '#fff'
+      cropContext.fillRect(0, 0, crop.width, crop.height)
+      cropContext.drawImage(canvas, left, top, width, height, 0, 0, crop.width, crop.height)
+      visuals.push({
+        src: crop.toDataURL('image/jpeg', 0.9),
+        width: crop.width,
+        height: crop.height,
+        sourceWidth: width,
+        sourceHeight: height,
+        order: top,
+        centerX: left + width / 2,
+      })
+    } catch {
+      // A malformed image box should not prevent the full original page from printing.
+    }
   }
 
   const orderedVisuals = visuals
@@ -105,11 +115,7 @@ async function extractPdfPageVisuals(page, viewport) {
     .map((visual, index) => ({ ...visual, id: `pdf-visual-${index + 1}`, number: index + 1 }))
   return {
     visuals: orderedVisuals,
-    printPage: {
-      src: canvas.toDataURL('image/png'),
-      width: canvas.width,
-      height: canvas.height,
-    },
+    printPage,
   }
 }
 
@@ -673,12 +679,17 @@ function buildOriginalPrintOverlays(worksheet, reveal) {
         if (overlapStart >= overlapEnd || run.end <= run.start) continue
         const startRatio = (overlapStart - run.start) / (run.end - run.start)
         const endRatio = (overlapEnd - run.start) / (run.end - run.start)
+        const horizontalPadding = run.height * 0.22
+        const rawX = run.x + run.width * startRatio
+        const rawWidth = Math.max(run.width * (endRatio - startRatio), run.height * 0.8)
+        const x = Math.max(0, rawX - horizontalPadding)
+        const top = Math.max(0, run.top - run.height * 0.18)
         overlays.push({
           key: `${paragraph.paraIdx}-${blank.start}-${run.start}`,
-          x: run.x + run.width * startRatio,
-          top: run.top - run.height * 0.08,
-          width: Math.max(run.width * (endRatio - startRatio), run.height * 0.8),
-          height: run.height * 1.18,
+          x,
+          top,
+          width: Math.min(worksheet.layout.pageWidth - x, rawWidth + horizontalPadding * 2),
+          height: Math.min(worksheet.layout.pageHeight - top, run.height * 1.45),
         })
       }
     }
@@ -892,6 +903,7 @@ export default function App() {
   const [exportFormat, setExportFormat] = useState('pdf')
   const [worksheetTitle, setWorksheetTitle] = useState('빈칸 학습지')
   const [fileStatus, setFileStatus] = useState('')
+  const [isPreparingPrint, setIsPreparingPrint] = useState(false)
   const fileInputRef = useRef(null)
 
   const levelObj = LEVELS.find((l) => l.id === level)
@@ -1088,9 +1100,28 @@ export default function App() {
     setCheckedByPage((prev) => ({ ...prev, [currentPage]: false }))
   }
 
-  function handleDownload() {
-    if (exportFormat === 'pdf') {
+  async function preparePrint() {
+    if (isPreparingPrint) return
+    setIsPreparingPrint(true)
+    try {
+      const printSources = allPageWorksheets.map((worksheetPage) => worksheetPage.printPage?.src).filter(Boolean)
+      await Promise.all(printSources.map((src) => new Promise((resolve) => {
+        const image = new Image()
+        image.onload = resolve
+        image.onerror = resolve
+        image.src = src
+        if (image.decode) image.decode().then(resolve, resolve)
+      })))
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
       window.print()
+    } finally {
+      setIsPreparingPrint(false)
+    }
+  }
+
+  async function handleDownload() {
+    if (exportFormat === 'pdf') {
+      await preparePrint()
       return
     }
     const reveal = studyMode === 'reveal'
@@ -1184,7 +1215,9 @@ export default function App() {
             >
               정답 확인
             </button>
-            <button className="print-btn" onClick={() => window.print()}>인쇄·PDF</button>
+            <button className="print-btn" onClick={preparePrint} disabled={isPreparingPrint}>
+              {isPreparingPrint ? '인쇄 준비 중…' : '인쇄·PDF'}
+            </button>
           </div>
           <div className="line-control-guide">
             줄 번호 클릭: <span className="guide-auto">자동</span> → <span className="guide-always">항상 빈칸</span> → <span className="guide-never">항상 남기기</span>

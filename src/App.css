@@ -237,6 +237,11 @@
   margin-left: auto;
 }
 
+.print-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
 .fallback-note {
   font-size: 12px;
   color: var(--red);
@@ -795,12 +800,14 @@
   overflow: hidden;
   line-height: 0;
   background: #fff;
+  break-inside: avoid;
+  page-break-inside: avoid;
 }
 
 .original-print-page > img {
   display: block;
   width: 100%;
-  height: 100%;
+  height: auto;
 }
 
 .original-blank-overlay,
@@ -812,7 +819,7 @@
 }
 
 .original-blank-overlay {
-  border-bottom: 0.25mm solid #111;
+  border-bottom: 0.12mm solid rgba(17, 17, 17, 0.48);
 }
 
 @media print {
@@ -902,6 +909,7 @@
   .print-page-block.original-layout {
     break-after: page;
     page-break-after: always;
+    overflow: hidden;
   }
   .print-page-block.original-layout:last-child {
     break-after: auto;
