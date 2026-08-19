@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import './App.css'
+import pkg from '../package.json'
 
 const LEVELS = [
   { id: 1, label: 'L1', name: '가볍게', density: 0.06, minGapWords: 6 },
@@ -517,6 +518,7 @@ export default function App() {
       <header className="topbar">
         <span className="brand">빈칸 학습지 생성기</span>
         <span className="brand-sub">지문을 넣으면 핵심 내용을 골라 빈칸으로 재가공합니다</span>
+        <span className="version-tag">v{pkg.version} · 제작자 yunjunseop</span>
       </header>
 
       <main className="workspace">

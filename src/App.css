@@ -12,6 +12,16 @@
   align-items: baseline;
   gap: 14px;
   flex-wrap: wrap;
+  position: relative;
+}
+
+.version-tag {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 10px;
+  color: #7d818a;
+  letter-spacing: 0.2px;
 }
 
 .brand {
