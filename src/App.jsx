@@ -90,7 +90,9 @@ function spanKey(paraIdx, start) {
   return `${paraIdx}:${start}`
 }
 
-function buildWorksheet({ sourceText, level, selectedCategories, lineModes, includeFigures, alwaysList, neverList, manualInclude, manualExclude }) {
+const LINE_BLANK_MATCH = (c) => c.length >= 2 && (HANGUL.test(c) || /\d/.test(c))
+
+function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLines, neverBlankLines, includeFigures, alwaysList, neverList, manualInclude, manualExclude }) {
   const paragraphs = sourceText.split(/\n+/).map((t) => t.trim()).filter(Boolean)
   const activeCats = CATEGORIES.filter((c) => selectedCategories.has(c.id))
   const subjectOnly = activeCats.filter((c) => c.group === 'subject' && c.id !== 'common')
@@ -109,22 +111,26 @@ function buildWorksheet({ sourceText, level, selectedCategories, lineModes, incl
 
   const perPara = paragraphs.map((paraText, paraIdx) => {
     const figure = isFigureLine(paraText)
-    const mode = lineModes[paraIdx] || 'auto'
+    const lineState = neverBlankLines.has(paraIdx) ? 'never' : alwaysBlankLines.has(paraIdx) ? 'always' : 'auto'
     const words = extractWords(paraText)
 
     let candidates = []
-    if (figure) {
+    if (lineState === 'never') {
+      candidates = []
+    } else if (figure) {
       if (includeFigures) {
         candidates = words.filter((w) => FIGURE_NUM_UNIT(w.clean)).map((w) => ({ ...w, category: 'figure', style: 'full', forced: true }))
       }
-    } else if (mode !== 'keep') {
+    } else if (lineState === 'always') {
+      candidates = words.filter((w) => LINE_BLANK_MATCH(w.clean)).map((w) => ({ ...w, category: 'line', style: 'full', forced: true }))
+    } else {
       for (const w of words) {
         const cat = effectiveCats.find((c) => c.test(w.clean))
         if (cat) candidates.push({ ...w, category: cat.id, style: cat.style || 'full', forced: false })
       }
     }
 
-    const alwaysSpans = figure ? [] : findPhraseSpans(paraText, alwaysList).map((s) => ({ ...s, category: 'always', style: 'full', forced: true }))
+    const alwaysSpans = (figure || lineState === 'never') ? [] : findPhraseSpans(paraText, alwaysList).map((s) => ({ ...s, category: 'always', style: 'full', forced: true }))
     const neverSpans = findPhraseSpans(paraText, neverList)
 
     let pool = [...candidates, ...alwaysSpans].filter((s) => !neverSpans.some((n) => overlaps(s, n)))
@@ -135,20 +141,19 @@ function buildWorksheet({ sourceText, level, selectedCategories, lineModes, incl
     }
     kept.sort((a, b) => a.start - b.start)
 
-    return { paraIdx, paraText, figure, mode, words, pool: kept }
+    return { paraIdx, paraText, figure, lineState, words, pool: kept }
   })
 
   const density = level.density
-  const eligible = perPara.filter((p) => !p.figure && p.mode !== 'keep')
+  const eligible = perPara.filter((p) => !p.figure && p.lineState !== 'never')
   const totalWords = eligible.reduce((s, p) => s + p.words.length, 0)
   const forcedSpansByPara = new Map(eligible.map((p) => [p.paraIdx, p.pool.filter((s) => s.forced)]))
   const forcedCountTotal = [...forcedSpansByPara.values()].reduce((s, arr) => s + arr.length, 0)
   const targetBlanksTotal = Math.round(totalWords * density)
   const remainingBudget = Math.max(0, targetBlanksTotal - forcedCountTotal)
 
-  const weight = (p) => (p.mode === 'focus' ? 3 : 1)
-  const totalWeighted = eligible.reduce((s, p) => s + p.words.length * weight(p), 0) || 1
-  const rawShares = eligible.map((p) => ({ paraIdx: p.paraIdx, share: (p.words.length * weight(p) / totalWeighted) * remainingBudget }))
+  const totalWeighted = eligible.reduce((s, p) => s + p.words.length, 0) || 1
+  const rawShares = eligible.map((p) => ({ paraIdx: p.paraIdx, share: (p.words.length / totalWeighted) * remainingBudget }))
   const floors = rawShares.map((r) => ({ ...r, floor: Math.floor(r.share) }))
   let usedBudget = floors.reduce((s, r) => s + r.floor, 0)
   let leftover = remainingBudget - usedBudget
@@ -166,7 +171,7 @@ function buildWorksheet({ sourceText, level, selectedCategories, lineModes, incl
       for (const s of p.pool) chosenKeys.add(spanKey(p.paraIdx, s.start))
       continue
     }
-    if (p.mode === 'keep') continue
+    if (p.lineState === 'never') continue
     const share = shareMap.get(p.paraIdx) || 0
     let nonForcedAccepted = 0
     let lastEnd = -Infinity
@@ -245,21 +250,25 @@ function BlankField({ blank, studyMode, userAnswers, setUserAnswer, checked, all
 }
 
 function Paragraph({ p, studyMode, userAnswers, setUserAnswer, checked, allAnswerTexts, editMode, toggleManual }) {
-  if (p.figure) {
-    return (
-      <div className="figure-box">
-        <div className="figure-label">FIGURE · {p.paraText.replace(/^\[|\]$/g, '').slice(0, 2)}</div>
-        <div className="figure-text">
-          {renderSegments(p.paraText, p.blanks, p.unchosen, { studyMode, userAnswers, setUserAnswer, checked, allAnswerTexts, editMode, toggleManual, paraIdx: p.paraIdx })}
-        </div>
-      </div>
-    )
-  }
-  const modeClass = p.mode === 'focus' ? 'line-focus' : p.mode === 'keep' ? 'line-keep' : ''
+  const stateClass = p.lineState === 'always' ? 'line-always' : p.lineState === 'never' ? 'line-never' : ''
   return (
-    <p className={`ws-paragraph ${modeClass}`}>
-      {renderSegments(p.paraText, p.blanks, p.unchosen, { studyMode, userAnswers, setUserAnswer, checked, allAnswerTexts, editMode, toggleManual, paraIdx: p.paraIdx })}
-    </p>
+    <div className={`ws-line ${stateClass}`}>
+      <span className="ws-line-num">{p.paraIdx + 1}</span>
+      <div className="ws-line-content">
+        {p.figure ? (
+          <div className="figure-box">
+            <div className="figure-label">FIGURE · {p.paraText.replace(/^\[|\]$/g, '').slice(0, 2)}</div>
+            <div className="figure-text">
+              {renderSegments(p.paraText, p.blanks, p.unchosen, { studyMode, userAnswers, setUserAnswer, checked, allAnswerTexts, editMode, toggleManual, paraIdx: p.paraIdx })}
+            </div>
+          </div>
+        ) : (
+          <p className="ws-paragraph">
+            {renderSegments(p.paraText, p.blanks, p.unchosen, { studyMode, userAnswers, setUserAnswer, checked, allAnswerTexts, editMode, toggleManual, paraIdx: p.paraIdx })}
+          </p>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -382,7 +391,8 @@ export default function App() {
   const [level, setLevel] = useState(2)
   const [selectedCategories, setSelectedCategories] = useState(new Set(['common']))
   const [includeFigures, setIncludeFigures] = useState(true)
-  const [lineModes, setLineModes] = useState({})
+  const [alwaysBlankLines, setAlwaysBlankLines] = useState(new Set())
+  const [neverBlankLines, setNeverBlankLines] = useState(new Set())
   const [alwaysList, setAlwaysList] = useState([])
   const [neverList, setNeverList] = useState([])
   const [alwaysInput, setAlwaysInput] = useState('')
@@ -404,14 +414,15 @@ export default function App() {
         sourceText,
         level: levelObj,
         selectedCategories,
-        lineModes,
+        alwaysBlankLines,
+        neverBlankLines,
         includeFigures,
         alwaysList,
         neverList,
         manualInclude,
         manualExclude,
       }),
-    [sourceText, levelObj, selectedCategories, lineModes, includeFigures, alwaysList, neverList, manualInclude, manualExclude],
+    [sourceText, levelObj, selectedCategories, alwaysBlankLines, neverBlankLines, includeFigures, alwaysList, neverList, manualInclude, manualExclude],
   )
 
   const allAnswerTexts = useMemo(() => [...new Set(worksheet.answers.map((a) => a.clean))], [worksheet])
@@ -428,16 +439,34 @@ export default function App() {
     })
   }
 
-  function cycleLineMode(idx) {
-    setLineModes((prev) => {
-      const cur = prev[idx] || 'auto'
-      const next = cur === 'auto' ? 'focus' : cur === 'focus' ? 'keep' : 'auto'
-      return { ...prev, [idx]: next }
+  function toggleAlwaysLine(idx) {
+    setAlwaysBlankLines((prev) => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx)
+      else next.add(idx)
+      return next
+    })
+    setNeverBlankLines((prev) => {
+      if (!prev.has(idx)) return prev
+      const next = new Set(prev)
+      next.delete(idx)
+      return next
     })
   }
 
-  function resetLineModes() {
-    setLineModes({})
+  function toggleNeverLine(idx) {
+    setNeverBlankLines((prev) => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx)
+      else next.add(idx)
+      return next
+    })
+    setAlwaysBlankLines((prev) => {
+      if (!prev.has(idx)) return prev
+      const next = new Set(prev)
+      next.delete(idx)
+      return next
+    })
   }
 
   function setUserAnswer(key, val) {
@@ -494,7 +523,8 @@ export default function App() {
   function regenerate() {
     setManualInclude(new Set())
     setManualExclude(new Set())
-    setLineModes({})
+    setAlwaysBlankLines(new Set())
+    setNeverBlankLines(new Set())
     setUserAnswers({})
     setChecked(false)
   }
@@ -548,24 +578,8 @@ export default function App() {
 
         <section className="panel worksheet-panel">
           <div className="panel-head">
-            <span><span className="panel-num">02</span> 재가공된 학습지</span>
+            <span><span className="panel-num">02</span> 재가공된 학습지 미리보기</span>
             <span className="meta">빈칸 {worksheet.blankCount} · 작성 {writtenCount} · 정답 {checked ? correctCount : 0}</span>
-          </div>
-
-          <div className="line-select-row">
-            <span className="line-select-label">줄선택</span>
-            {worksheet.paragraphs.map((p, i) => (
-              <button
-                key={i}
-                className={`line-chip mode-${p.mode}`}
-                onClick={() => cycleLineMode(i)}
-                title="클릭 → 자동 · 집중 · 원문유지"
-              >
-                {i + 1}
-              </button>
-            ))}
-            <span className="line-select-hint">클릭→자동·집중·원문유지</span>
-            <button className="ghost-btn" onClick={resetLineModes}>모두 자동</button>
           </div>
 
           <div className="worksheet-toolbar">
@@ -605,7 +619,7 @@ export default function App() {
           </div>
           <div className="name-row">이름 <span className="name-line" /></div>
 
-          <div id="printable" className="worksheet-body">
+          <div id="printable" className="worksheet-body manuscript">
             {worksheet.paragraphs.map((p) => (
               <Paragraph
                 key={p.paraIdx}
@@ -689,6 +703,21 @@ export default function App() {
                 <span key={i} className="tag tag-always" onClick={() => setAlwaysList((p) => p.filter((_, idx) => idx !== i))}>{t} ×</span>
               ))}
             </div>
+            {worksheet.paragraphs.length > 0 && (
+              <div className="line-toggle-row">
+                <span className="line-toggle-label">줄 선택</span>
+                {worksheet.paragraphs.map((p, i) => (
+                  <button
+                    key={i}
+                    className={`line-chip${alwaysBlankLines.has(i) ? ' selected-always' : ''}`}
+                    onClick={() => toggleAlwaysLine(i)}
+                    title={`${i + 1}번째 줄 전체를 빈칸으로 가리기`}
+                  >
+                    {i + 1}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="phrase-col never">
             <h4>항상 그대로 남기기</h4>
@@ -702,6 +731,21 @@ export default function App() {
                 <span key={i} className="tag tag-never" onClick={() => setNeverList((p) => p.filter((_, idx) => idx !== i))}>{t} ×</span>
               ))}
             </div>
+            {worksheet.paragraphs.length > 0 && (
+              <div className="line-toggle-row">
+                <span className="line-toggle-label">줄 선택</span>
+                {worksheet.paragraphs.map((p, i) => (
+                  <button
+                    key={i}
+                    className={`line-chip${neverBlankLines.has(i) ? ' selected-never' : ''}`}
+                    onClick={() => toggleNeverLine(i)}
+                    title={`${i + 1}번째 줄 전체를 빈칸 없이 남기기`}
+                  >
+                    {i + 1}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </section>

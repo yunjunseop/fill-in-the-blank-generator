@@ -125,46 +125,43 @@
   outline-offset: -1px;
 }
 
-.line-select-row {
+.line-toggle-row {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  font-size: 12px;
-  color: var(--text-dim);
+  margin-top: 10px;
 }
 
-.line-select-label {
+.line-toggle-label {
+  font-size: 11px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--text-dim);
   margin-right: 2px;
 }
 
 .line-chip {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border-radius: 6px;
   border: 1px solid var(--border-strong);
   background: #fff;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
+  color: var(--ink);
 }
 
-.line-chip.mode-focus {
+.line-chip.selected-always {
   background: var(--green);
   border-color: var(--green);
   color: #fff;
 }
 
-.line-chip.mode-keep {
-  background: var(--red-bg);
+.line-chip.selected-never {
+  background: var(--red);
   border-color: var(--red);
-  color: var(--red);
-}
-
-.line-select-hint {
-  margin-left: 4px;
+  color: #fff;
 }
 
 .ghost-btn {
@@ -300,18 +297,48 @@
   color: var(--ink);
 }
 
-.ws-paragraph {
+.worksheet-body.manuscript {
+  border-left: 1px solid var(--border-strong);
+}
+
+.ws-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
   margin: 0 0 14px;
-  padding-left: 10px;
   border-left: 3px solid transparent;
+  padding-left: 8px;
+  margin-left: -1px;
 }
 
-.ws-paragraph.line-focus {
+.ws-line.line-always {
   border-left-color: var(--green);
+  background: var(--green-bg);
 }
 
-.ws-paragraph.line-keep {
+.ws-line.line-never {
   border-left-color: var(--red);
+  background: var(--red-bg);
+}
+
+.ws-line-num {
+  flex: 0 0 auto;
+  width: 20px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--mono, monospace);
+  padding-top: 3px;
+  user-select: none;
+}
+
+.ws-line-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.ws-paragraph {
+  margin: 0;
 }
 
 .empty-msg {
@@ -637,7 +664,6 @@
 @media print {
   .topbar,
   .source-panel,
-  .line-select-row,
   .worksheet-toolbar,
   .fallback-note,
   .controls-grid,
