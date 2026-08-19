@@ -420,13 +420,32 @@ function isFigureLine(line) {
   return /^\[?\s*(그림|표|Fig(?:ure)?|Table)\s*\.?\s*\d+/i.test(line.trim())
 }
 
+function isHeadingLine(line, index, paragraphs) {
+  const text = line.trim()
+  if (!text || text.length > 90) return false
+  if (/^#{1,6}\s+\S+/.test(text)) return true
+  if (/^(주제|제목|소주제|소제목|목차|단원|학습\s*목표|핵심\s*개념|서론|본론|결론)\s*(?:[:：]\s*\S.*)?$/.test(text)) return true
+  if (/^제\s*\d+\s*(장|절|항|단원)(?:\s|$)/.test(text)) return true
+  if (/^(\d+(?:\.\d+)*[.)]?|[가-하][.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?)\s+\S+/.test(text)) return true
+  if (/^(\[[^\]]+\]|【[^】]+】|〈[^〉]+〉|《[^》]+》)$/.test(text)) return true
+  if (/\.{2,}\s*\d+$/.test(text)) return true
+
+  const separatedByBlank = (index > 0 && !paragraphs[index - 1].trim())
+    || (index < paragraphs.length - 1 && !paragraphs[index + 1].trim())
+  const shortTitleLike = text.length <= 35
+    && text.split(/\s+/).length <= 7
+    && !/[.!?。！？]$/.test(text)
+    && !/(했다|한다|된다|이다|있다|없다|하였다|됩니다|입니다)$/.test(text)
+  return separatedByBlank && shortTitleLike
+}
+
 function spanKey(paraIdx, start) {
   return `${paraIdx}:${start}`
 }
 
 const LINE_BLANK_MATCH = (c) => c.length >= 2 && (HANGUL.test(c) || /\d/.test(c))
 
-function buildWorksheet({ sourceText, level, selectedCategories, selectedGrammarBoosts = EMPTY_SET, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, visuals = [], excludedVisuals = EMPTY_SET, layout = DEFAULT_LAYOUT, printPage = null }) {
+function buildWorksheet({ sourceText, level, selectedCategories, selectedGrammarBoosts = EMPTY_SET, preserveHeadings = true, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, visuals = [], excludedVisuals = EMPTY_SET, layout = DEFAULT_LAYOUT, printPage = null }) {
   const paragraphs = sourceText
     ? sourceText.replace(/\r\n?/g, '\n').split('\n')
     : []
@@ -448,11 +467,20 @@ function buildWorksheet({ sourceText, level, selectedCategories, selectedGrammar
 
   const perPara = paragraphs.map((paraText, paraIdx) => {
     const figure = isFigureLine(paraText)
-    const lineState = rawMode ? 'auto' : neverBlankLines.has(paraIdx) ? 'never' : alwaysBlankLines.has(paraIdx) ? 'always' : 'auto'
+    const heading = preserveHeadings && isHeadingLine(paraText, paraIdx, paragraphs)
+    const lineState = rawMode
+      ? 'auto'
+      : neverBlankLines.has(paraIdx)
+        ? 'never'
+        : alwaysBlankLines.has(paraIdx)
+          ? 'always'
+          : heading
+            ? 'heading'
+            : 'auto'
     const words = extractWords(paraText)
 
     let candidates = []
-    if (rawMode || lineState === 'never') {
+    if (rawMode || lineState === 'never' || lineState === 'heading') {
       candidates = []
     } else if (figure) {
       candidates = []
@@ -473,7 +501,7 @@ function buildWorksheet({ sourceText, level, selectedCategories, selectedGrammar
       }
     }
 
-    const alwaysSpans = (rawMode || figure || lineState === 'never') ? [] : findPhraseSpans(paraText, alwaysList).map((s) => ({ ...s, category: 'always', style: 'full', forced: true }))
+    const alwaysSpans = (rawMode || figure || lineState === 'never' || lineState === 'heading') ? [] : findPhraseSpans(paraText, alwaysList).map((s) => ({ ...s, category: 'always', style: 'full', forced: true }))
     const neverSpans = findPhraseSpans(paraText, neverList)
 
     let pool = [...candidates, ...alwaysSpans].filter((s) => !neverSpans.some((n) => overlaps(s, n)))
@@ -484,11 +512,11 @@ function buildWorksheet({ sourceText, level, selectedCategories, selectedGrammar
     }
     kept.sort((a, b) => a.start - b.start)
 
-    return { paraIdx, paraText, figure, lineState, words, pool: kept, column: layout.lineColumns[paraIdx] || 0 }
+    return { paraIdx, paraText, figure, heading, lineState, words, pool: kept, column: layout.lineColumns[paraIdx] || 0 }
   })
 
   const density = level.density
-  const eligible = perPara.filter((p) => !p.figure && p.lineState !== 'never')
+  const eligible = perPara.filter((p) => !p.figure && p.lineState !== 'never' && p.lineState !== 'heading')
   const totalWords = eligible.reduce((s, p) => s + p.words.length, 0)
   const forcedSpansByPara = new Map(eligible.map((p) => [p.paraIdx, p.pool.filter((s) => s.forced)]))
   const forcedCountTotal = [...forcedSpansByPara.values()].reduce((s, arr) => s + arr.length, 0)
@@ -518,7 +546,7 @@ function buildWorksheet({ sourceText, level, selectedCategories, selectedGrammar
       for (const s of p.pool) chosenKeys.add(spanKey(p.paraIdx, s.start))
       continue
     }
-    if (p.lineState === 'never') continue
+    if (p.lineState === 'never' || p.lineState === 'heading') continue
     const share = shareMap.get(p.paraIdx) || 0
     const acceptedSpans = p.pool.filter((span) => span.forced)
     for (const span of acceptedSpans) chosenKeys.add(spanKey(p.paraIdx, span.start))
@@ -592,13 +620,15 @@ function BlankField({ blank, studyMode, userAnswers, setUserAnswer, checked }) {
 }
 
 function Paragraph({ p, studyMode, userAnswers, setUserAnswer, checked, editMode, toggleManual, cycleLineState, lineControlsEnabled }) {
-  const stateClass = p.lineState === 'always' ? 'line-always' : p.lineState === 'never' ? 'line-never' : ''
+  const stateClass = p.lineState === 'always' ? 'line-always' : p.lineState === 'never' ? 'line-never' : p.lineState === 'heading' ? 'line-heading' : ''
   const isEmpty = !p.paraText.trim()
   const canCycleLine = lineControlsEnabled && !isEmpty && !p.figure
   const lineTitle = p.lineState === 'always'
     ? `${p.paraIdx + 1}줄: 항상 빈칸 · 클릭하면 항상 남기기`
     : p.lineState === 'never'
       ? `${p.paraIdx + 1}줄: 항상 남기기 · 클릭하면 자동으로 전환`
+      : p.lineState === 'heading'
+        ? `${p.paraIdx + 1}줄: 제목·목차로 자동 보존 · 클릭하면 항상 빈칸`
       : `${p.paraIdx + 1}줄: 자동 · 클릭하면 줄 전체를 빈칸으로 전환`
   return (
     <div className={`ws-line${isEmpty ? ' ws-empty-line' : ''} ${stateClass}`}>
@@ -625,7 +655,7 @@ function Paragraph({ p, studyMode, userAnswers, setUserAnswer, checked, editMode
             </div>
           </div>
         ) : (
-          <p className="ws-paragraph">
+          <p className={`ws-paragraph${p.heading ? ' ws-heading' : ''}`}>
             {renderSegments(p.paraText, p.blanks, p.unchosen, { studyMode, userAnswers, setUserAnswer, checked, editMode, toggleManual, paraIdx: p.paraIdx })}
           </p>
         )}
@@ -957,6 +987,7 @@ export default function App() {
   const [level, setLevel] = useState(2)
   const [selectedCategories, setSelectedCategories] = useState(new Set(['common']))
   const [selectedGrammarBoosts, setSelectedGrammarBoosts] = useState(new Set())
+  const [preserveHeadings, setPreserveHeadings] = useState(true)
   const [sourceVisualsByPage, setSourceVisualsByPage] = useState({})
   const [sourceLayoutsByPage, setSourceLayoutsByPage] = useState({})
   const [sourcePrintPagesByPage, setSourcePrintPagesByPage] = useState({})
@@ -973,6 +1004,8 @@ export default function App() {
   const [userAnswersByPage, setUserAnswersByPage] = useState({})
   const [checkedByPage, setCheckedByPage] = useState({})
   const [exportFormat, setExportFormat] = useState('pdf')
+  const [printMode, setPrintMode] = useState('original')
+  const [qualityPrintFontSize, setQualityPrintFontSize] = useState(12)
   const [worksheetTitle, setWorksheetTitle] = useState('빈칸 학습지')
   const [fileStatus, setFileStatus] = useState('')
   const [isPreparingPrint, setIsPreparingPrint] = useState(false)
@@ -998,6 +1031,7 @@ export default function App() {
         level: levelObj,
         selectedCategories,
         selectedGrammarBoosts,
+        preserveHeadings,
         alwaysBlankLines,
         neverBlankLines,
         alwaysList,
@@ -1009,7 +1043,7 @@ export default function App() {
         layout: currentLayout,
         printPage: currentPrintPage,
       }),
-    [currentText, levelObj, selectedCategories, selectedGrammarBoosts, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, currentVisuals, excludedVisuals, currentLayout, currentPrintPage],
+    [currentText, levelObj, selectedCategories, selectedGrammarBoosts, preserveHeadings, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, currentVisuals, excludedVisuals, currentLayout, currentPrintPage],
   )
 
   const allPageWorksheets = useMemo(
@@ -1020,6 +1054,7 @@ export default function App() {
           level: levelObj,
           selectedCategories,
           selectedGrammarBoosts,
+          preserveHeadings,
           alwaysBlankLines: alwaysBlankLinesByPage[i] || EMPTY_SET,
           neverBlankLines: neverBlankLinesByPage[i] || EMPTY_SET,
           alwaysList,
@@ -1032,11 +1067,12 @@ export default function App() {
           printPage: sourcePrintPagesByPage[i] || null,
         }),
       ),
-    [sourcePages, levelObj, selectedCategories, selectedGrammarBoosts, alwaysBlankLinesByPage, neverBlankLinesByPage, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage, sourceVisualsByPage, excludedVisualsByPage, sourceLayoutsByPage, sourcePrintPagesByPage],
+    [sourcePages, levelObj, selectedCategories, selectedGrammarBoosts, preserveHeadings, alwaysBlankLinesByPage, neverBlankLinesByPage, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage, sourceVisualsByPage, excludedVisualsByPage, sourceLayoutsByPage, sourcePrintPagesByPage],
   )
 
   const totalBlankCount = allPageWorksheets.reduce((s, w) => s + w.blankCount, 0)
   const hasOriginalPrintPages = allPageWorksheets.length > 0 && allPageWorksheets.every((worksheetPage) => worksheetPage.printPage)
+  const effectivePrintMode = printMode === 'original' && hasOriginalPrintPages ? 'original' : 'quality'
 
   const writtenCount = Object.values(userAnswers).filter((v) => v && v.trim()).length
   const correctCount = worksheet.answers.filter((a) => (userAnswers[a.key] || '').trim() === a.clean).length
@@ -1187,7 +1223,9 @@ export default function App() {
     if (isPreparingPrint) return
     setIsPreparingPrint(true)
     try {
-      const printSources = allPageWorksheets.map((worksheetPage) => worksheetPage.printPage?.src).filter(Boolean)
+      const printSources = effectivePrintMode === 'original'
+        ? allPageWorksheets.map((worksheetPage) => worksheetPage.printPage?.src).filter(Boolean)
+        : allPageWorksheets.flatMap((worksheetPage) => worksheetPage.visuals.filter((visual) => !visual.excluded).map((visual) => visual.src))
       await Promise.all(printSources.map((src) => new Promise((resolve) => {
         const image = new Image()
         image.onload = resolve
@@ -1299,14 +1337,16 @@ export default function App() {
               정답 확인
             </button>
             <button className="print-btn" onClick={preparePrint} disabled={isPreparingPrint}>
-              {isPreparingPrint ? '인쇄 준비 중…' : '인쇄·PDF'}
+              {isPreparingPrint ? '인쇄 준비 중…' : effectivePrintMode === 'original' ? '원문 형식 인쇄' : '가독성 우선 인쇄'}
             </button>
           </div>
           <div className="line-control-guide">
-            줄 번호 클릭: <span className="guide-auto">자동</span> → <span className="guide-always">항상 빈칸</span> → <span className="guide-never">항상 남기기</span>
+            줄 번호 클릭: <span className="guide-auto">자동</span> → <span className="guide-always">항상 빈칸</span> → <span className="guide-never">항상 남기기</span> · <span className="guide-heading">제목·목차 자동 보존</span>
           </div>
           <div className="print-format-note">
-            참고: 미리보기는 편집용 표시입니다. PDF 인쇄는 원문의 글자 크기·단 구성·그림·표 위치와 페이지 수를 그대로 유지하고, 선택한 빈칸만 원문 위치에 반영합니다.
+            {effectivePrintMode === 'original'
+              ? '원문 형식 인쇄: 원문의 글자 크기·단 구성·그림·표 위치와 페이지 수를 유지합니다. 원본 위에 빈칸을 덮으므로 일부 글자가 미세하게 남을 수 있습니다.'
+              : `가독성 우선 인쇄: 본문과 빈칸을 ${qualityPrintFontSize}pt로 다시 조판해 깔끔하게 출력합니다. 원문과 페이지 수·줄바꿈은 달라질 수 있습니다.`}
           </div>
 
           {worksheet.usedFallback && (
@@ -1337,8 +1377,11 @@ export default function App() {
             {worksheet.paragraphs.length === 0 && <p className="empty-msg">왼쪽에 지문을 입력하면 학습지가 생성됩니다.</p>}
           </div>
 
-          <div className="print-all-pages">
-            {!hasOriginalPrintPages && (
+          <div
+            className={`print-all-pages ${effectivePrintMode}-print`}
+            style={effectivePrintMode === 'quality' ? { '--quality-print-font-size': `${qualityPrintFontSize}pt` } : undefined}
+          >
+            {effectivePrintMode === 'quality' && (
               <>
                 <div className="worksheet-title-row">
                   <span className="title-input">{worksheetTitle}</span>
@@ -1351,8 +1394,8 @@ export default function App() {
               </>
             )}
             {allPageWorksheets.map((ws, pageIdx) => (
-              <div key={pageIdx} className={`print-page-block${ws.printPage ? ' original-layout' : ''}`}>
-                {ws.printPage ? (
+              <div key={pageIdx} className={`print-page-block ${effectivePrintMode}-layout`}>
+                {effectivePrintMode === 'original' ? (
                   <OriginalPrintPage worksheet={ws} studyMode={studyMode} />
                 ) : (
                   <PrintWorksheetContent
@@ -1397,6 +1440,16 @@ export default function App() {
             ))}
           </div>
           <div className="chip-row">
+            <span className="chip-row-label">본문 구조</span>
+            <button
+              className={`chip${preserveHeadings ? ' selected' : ''}`}
+              onClick={() => setPreserveHeadings((value) => !value)}
+              title="제목, 주제, 소제목, 단원명과 목차형 줄을 자동으로 빈칸에서 제외합니다"
+            >
+              제목·목차 자동 남기기
+            </button>
+          </div>
+          <div className="chip-row">
             <span className="chip-row-label">품사 가중치</span>
             {GRAMMAR_BOOSTS.map((type) => (
               <button
@@ -1421,6 +1474,41 @@ export default function App() {
                 {f.label}
               </button>
             ))}
+          </div>
+          <div className="print-settings">
+            <div className="print-setting-label">인쇄 방식</div>
+            <div className="print-mode-grid">
+              <button
+                className={`print-mode-btn${effectivePrintMode === 'original' ? ' active' : ''}`}
+                onClick={() => setPrintMode('original')}
+                disabled={!hasOriginalPrintPages}
+              >
+                <strong>원문 형식</strong>
+                <span>원래 배치와 페이지 수 유지</span>
+              </button>
+              <button
+                className={`print-mode-btn${effectivePrintMode === 'quality' ? ' active' : ''}`}
+                onClick={() => setPrintMode('quality')}
+              >
+                <strong>가독성 우선</strong>
+                <span>본문을 다시 조판해 빈칸을 깔끔하게 출력</span>
+              </button>
+            </div>
+            {!hasOriginalPrintPages && <p className="print-setting-help">PDF 원본 페이지가 없으므로 가독성 우선 인쇄를 사용합니다.</p>}
+            {effectivePrintMode === 'quality' && (
+              <label className="font-size-control">
+                <span>인쇄 글자 크기</span>
+                <input
+                  type="range"
+                  min="9"
+                  max="20"
+                  step="0.5"
+                  value={qualityPrintFontSize}
+                  onChange={(event) => setQualityPrintFontSize(Number(event.target.value))}
+                />
+                <output>{qualityPrintFontSize}pt</output>
+              </label>
+            )}
           </div>
           <button className="download-btn" onClick={handleDownload}>내려받기</button>
           <div className="row-actions">

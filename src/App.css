@@ -326,6 +326,11 @@
   background: var(--red-bg);
 }
 
+.ws-line.line-heading {
+  border-left-color: #607d8b;
+  background: #f1f5f6;
+}
+
 .ws-line-num {
   flex: 0 0 auto;
   width: 26px;
@@ -366,6 +371,12 @@
   border-color: var(--red);
 }
 
+.ws-line-action.line-heading {
+  color: #fff;
+  background: #607d8b;
+  border-color: #607d8b;
+}
+
 .ws-line-content {
   flex: 1;
   min-width: 0;
@@ -374,6 +385,11 @@
 .ws-paragraph {
   margin: 0;
   white-space: pre-wrap;
+}
+
+.ws-heading {
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .ws-empty-line {
@@ -500,6 +516,10 @@
 
 .guide-never {
   color: var(--red);
+}
+
+.guide-heading {
+  color: #607d8b;
 }
 
 .page-visuals {
@@ -686,6 +706,89 @@
   color: var(--text-dim);
 }
 
+.print-settings {
+  margin: 12px 0 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.print-setting-label {
+  margin-bottom: 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.print-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.print-mode-btn {
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  padding: 9px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.print-mode-btn strong,
+.print-mode-btn span {
+  display: block;
+}
+
+.print-mode-btn strong {
+  margin-bottom: 3px;
+  font-size: 12px;
+}
+
+.print-mode-btn span {
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+
+.print-mode-btn.active {
+  border-color: var(--green);
+  background: var(--green-bg);
+  box-shadow: inset 0 0 0 1px var(--green);
+}
+
+.print-mode-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.print-setting-help {
+  margin: 6px 0 0;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.font-size-control {
+  display: grid;
+  grid-template-columns: auto minmax(80px, 1fr) 42px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.font-size-control input {
+  width: 100%;
+  accent-color: var(--green);
+}
+
+.font-size-control output {
+  color: var(--ink);
+  font-family: var(--mono, monospace);
+  text-align: right;
+}
+
 .download-btn {
   width: 100%;
   background: var(--ink);
@@ -829,6 +932,12 @@
   @page {
     margin: 0;
   }
+  @page originalPage {
+    margin: 0;
+  }
+  @page qualityPage {
+    margin: 14mm 16mm;
+  }
   .topbar,
   .source-panel,
   .worksheet-toolbar,
@@ -858,6 +967,14 @@
     font-size: 12pt;
     line-height: 1.7;
   }
+  .print-all-pages.original-print {
+    page: originalPage;
+  }
+  .print-all-pages.quality-print {
+    page: qualityPage;
+    font-size: var(--quality-print-font-size, 12pt);
+    line-height: 1.75;
+  }
   .print-all-pages .ws-line {
     gap: 0;
     padding-left: 0;
@@ -870,6 +987,20 @@
   }
   .print-all-pages .blank-input {
     font-size: inherit;
+  }
+  .print-all-pages.quality-print .blank-input,
+  .print-all-pages.quality-print .blank-reveal {
+    border: none !important;
+    box-shadow: none;
+  }
+  .print-all-pages.quality-print .blank-input {
+    appearance: none;
+    background: #fff;
+    padding: 0;
+  }
+  .print-all-pages .ws-heading {
+    margin: 0.35em 0 0.15em;
+    font-size: 1.12em;
   }
   .print-all-pages .figure-box {
     border: none;
@@ -915,6 +1046,14 @@
     overflow: hidden;
   }
   .print-page-block.original-layout:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+  .print-page-block.quality-layout {
+    break-after: page;
+    page-break-after: always;
+  }
+  .print-page-block.quality-layout:last-child {
     break-after: auto;
     page-break-after: auto;
   }
