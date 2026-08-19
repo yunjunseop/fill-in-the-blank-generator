@@ -12,12 +12,68 @@ async function extractPdfPages(file) {
   const buffer = await file.arrayBuffer()
   const pdf = await pdfjsLib.getDocument({ data: buffer }).promise
   const pages = []
+  const visualsByPage = {}
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i)
     const content = await page.getTextContent()
     pages.push(extractPdfPageText(content.items))
+    try {
+      visualsByPage[i - 1] = await extractPdfPageVisuals(page)
+    } catch {
+      visualsByPage[i - 1] = []
+    }
   }
-  return pages
+  return { pages, visualsByPage }
+}
+
+async function extractPdfPageVisuals(page) {
+  const viewport = page.getViewport({ scale: 1.5 })
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.ceil(viewport.width)
+  canvas.height = Math.ceil(viewport.height)
+  const context = canvas.getContext('2d', { alpha: false })
+  if (!context) return []
+
+  await page.render({ canvas, canvasContext: context, viewport, recordImages: true }).promise
+  const coordinates = page.imageCoordinates || []
+  const visuals = []
+  const seen = new Set()
+
+  for (let i = 0; i + 5 < coordinates.length && visuals.length < 12; i += 6) {
+    const xs = [coordinates[i], coordinates[i + 2], coordinates[i + 4]]
+    const ys = [coordinates[i + 1], coordinates[i + 3], coordinates[i + 5]]
+    const left = Math.max(0, Math.floor(Math.min(...xs) * canvas.width))
+    const top = Math.max(0, Math.floor(Math.min(...ys) * canvas.height))
+    const right = Math.min(canvas.width, Math.ceil(Math.max(...xs) * canvas.width))
+    const bottom = Math.min(canvas.height, Math.ceil(Math.max(...ys) * canvas.height))
+    const width = right - left
+    const height = bottom - top
+    if (width < 60 || height < 40 || width * height < 4000) continue
+
+    const boxKey = `${Math.round(left / 5)}:${Math.round(top / 5)}:${Math.round(width / 5)}:${Math.round(height / 5)}`
+    if (seen.has(boxKey)) continue
+    seen.add(boxKey)
+
+    const maxWidth = 1000
+    const scale = Math.min(1, maxWidth / width)
+    const crop = document.createElement('canvas')
+    crop.width = Math.max(1, Math.round(width * scale))
+    crop.height = Math.max(1, Math.round(height * scale))
+    const cropContext = crop.getContext('2d', { alpha: false })
+    if (!cropContext) continue
+    cropContext.fillStyle = '#fff'
+    cropContext.fillRect(0, 0, crop.width, crop.height)
+    cropContext.drawImage(canvas, left, top, width, height, 0, 0, crop.width, crop.height)
+    visuals.push({
+      id: `pdf-visual-${visuals.length + 1}`,
+      src: crop.toDataURL('image/jpeg', 0.9),
+      width: crop.width,
+      height: crop.height,
+      order: top,
+    })
+  }
+
+  return visuals.sort((a, b) => a.order - b.order)
 }
 
 function extractPdfPageText(items) {
@@ -53,7 +109,11 @@ function extractPdfPageText(items) {
       } else if (line && text && !/\s$/.test(line) && !/^\s/.test(text)) {
         const horizontalGap = Number.isFinite(x) && Number.isFinite(previousEndX) ? x - previousEndX : 0
         const averageCharacterWidth = previous.text.length ? previous.width / previous.text.length : 0
-        if (horizontalGap > Math.max(0.8, averageCharacterWidth * 0.18)) line += ' '
+        if (horizontalGap > Math.max(0.8, averageCharacterWidth * 0.18)) {
+          const spaceWidth = Math.max(averageCharacterWidth, height * 0.45, 1)
+          const spaceCount = Math.min(10, Math.max(1, Math.round(horizontalGap / spaceWidth)))
+          line += ' '.repeat(spaceCount)
+        }
       }
     }
 
@@ -74,6 +134,7 @@ function extractPdfPageText(items) {
 
 const EMPTY_SET = new Set()
 const EMPTY_OBJ = {}
+const EMPTY_ARRAY = []
 const NOOP = () => {}
 
 const LEVELS = [
@@ -159,15 +220,13 @@ function isFigureLine(line) {
   return /^\[?\s*(그림|표|Fig(?:ure)?|Table)\s*\.?\s*\d+/i.test(line.trim())
 }
 
-const FIGURE_NUM_UNIT = (c) => /^\d/.test(c) || /(cm|mm|km|kg|g|m|℃|%|초|분|시간|Hz|N|J)$/.test(c)
-
 function spanKey(paraIdx, start) {
   return `${paraIdx}:${start}`
 }
 
 const LINE_BLANK_MATCH = (c) => c.length >= 2 && (HANGUL.test(c) || /\d/.test(c))
 
-function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLines, neverBlankLines, includeFigures, alwaysList, neverList, manualInclude, manualExclude }) {
+function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, visuals = [], excludedVisuals = EMPTY_SET }) {
   const paragraphs = sourceText
     ? sourceText.replace(/\r\n?/g, '\n').split('\n')
     : []
@@ -196,9 +255,7 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
     if (rawMode || lineState === 'never') {
       candidates = []
     } else if (figure) {
-      if (includeFigures) {
-        candidates = words.filter((w) => FIGURE_NUM_UNIT(w.clean)).map((w) => ({ ...w, category: 'figure', style: 'full', forced: true }))
-      }
+      candidates = []
     } else if (lineState === 'always') {
       candidates = words.filter((w) => LINE_BLANK_MATCH(w.clean)).map((w) => ({ ...w, category: 'line', style: 'full', forced: true }))
     } else {
@@ -285,7 +342,14 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
   const answers = renderParas.flatMap((p) => p.blanks).sort((a, b) => a.seq - b.seq)
   const categoryLabel = rawMode ? '원문' : usedFallback ? '공통(대체)' : effectiveCats.map((c) => c.label).join('·') || '공통'
 
-  return { paragraphs: renderParas, blankCount, answers, usedFallback, categoryLabel }
+  return {
+    paragraphs: renderParas,
+    blankCount,
+    answers,
+    usedFallback,
+    categoryLabel,
+    visuals: visuals.map((visual) => ({ ...visual, excluded: excludedVisuals.has(visual.id) })),
+  }
 }
 
 function BlankField({ blank, studyMode, userAnswers, setUserAnswer, checked }) {
@@ -308,12 +372,29 @@ function BlankField({ blank, studyMode, userAnswers, setUserAnswer, checked }) {
   )
 }
 
-function Paragraph({ p, studyMode, userAnswers, setUserAnswer, checked, editMode, toggleManual }) {
+function Paragraph({ p, studyMode, userAnswers, setUserAnswer, checked, editMode, toggleManual, cycleLineState, lineControlsEnabled }) {
   const stateClass = p.lineState === 'always' ? 'line-always' : p.lineState === 'never' ? 'line-never' : ''
   const isEmpty = !p.paraText.trim()
+  const canCycleLine = lineControlsEnabled && !isEmpty && !p.figure
+  const lineTitle = p.lineState === 'always'
+    ? `${p.paraIdx + 1}줄: 항상 빈칸 · 클릭하면 항상 남기기`
+    : p.lineState === 'never'
+      ? `${p.paraIdx + 1}줄: 항상 남기기 · 클릭하면 자동으로 전환`
+      : `${p.paraIdx + 1}줄: 자동 · 클릭하면 줄 전체를 빈칸으로 전환`
   return (
     <div className={`ws-line${isEmpty ? ' ws-empty-line' : ''} ${stateClass}`}>
-      <span className="ws-line-num">{isEmpty ? '' : p.paraIdx + 1}</span>
+      {canCycleLine ? (
+        <button
+          className={`ws-line-num ws-line-action ${stateClass}`}
+          onClick={() => cycleLineState(p.paraIdx)}
+          title={lineTitle}
+          aria-label={lineTitle}
+        >
+          {p.paraIdx + 1}
+        </button>
+      ) : (
+        <span className="ws-line-num" title={p.figure ? '그림·표 설명 줄' : undefined}>{isEmpty ? '' : p.paraIdx + 1}</span>
+      )}
       <div className="ws-line-content">
         {isEmpty ? (
           <span aria-hidden="true">&nbsp;</span>
@@ -330,6 +411,37 @@ function Paragraph({ p, studyMode, userAnswers, setUserAnswer, checked, editMode
           </p>
         )}
       </div>
+    </div>
+  )
+}
+
+function PageVisuals({ visuals, toggleVisual, interactive = true }) {
+  if (!visuals.length) return null
+  const shownVisuals = interactive ? visuals : visuals.filter((visual) => !visual.excluded)
+  if (!shownVisuals.length) return null
+
+  return (
+    <div className="page-visuals">
+      {shownVisuals.map((visual, index) => (
+        <div key={visual.id} className={`page-visual-row${visual.excluded ? ' is-excluded' : ''}`}>
+          <div className="page-visual-marker">도표 {index + 1}</div>
+          <div className="page-visual-content">
+            {visual.excluded ? (
+              <div className="page-visual-placeholder">미리보기와 출력에서 삭제됨</div>
+            ) : (
+              <img src={visual.src} alt={`원문에서 추출한 그림 또는 도표 ${index + 1}`} />
+            )}
+          </div>
+          {interactive && (
+            <button
+              className={`visual-toggle-btn${visual.excluded ? ' include' : ' exclude'}`}
+              onClick={() => toggleVisual(visual.id)}
+            >
+              {visual.excluded ? '다시 포함' : '삭제'}
+            </button>
+          )}
+        </div>
+      ))}
     </div>
   )
 }
@@ -433,6 +545,9 @@ function buildPlainText(worksheets, title, reveal) {
       }
       lines.push(p.figure ? `[FIGURE] ${text}` : text)
     }
+    ws.visuals.filter((visual) => !visual.excluded).forEach((_, visualIdx) => {
+      lines.push(`[그림·도표 ${visualIdx + 1}]`)
+    })
   })
   return lines.join('\n')
 }
@@ -453,8 +568,12 @@ function buildHtml(worksheets, title, reveal) {
         ? `<div style="border:1px dashed #999;padding:8px;margin:8px 0;">${text}</div>`
         : `<div style="min-height:1.8em">${text}</div>`
     }).join('\n')
+    const visualBody = ws.visuals
+      .filter((visual) => !visual.excluded)
+      .map((visual, visualIdx) => `<figure style="margin:20px 0;"><img src="${visual.src}" alt="그림·도표 ${visualIdx + 1}" style="display:block;max-width:100%;height:auto;margin:auto;"></figure>`)
+      .join('\n')
     const heading = worksheets.length > 1 ? `<h2>${pageIdx + 1}페이지</h2>` : ''
-    return `${heading}${pageBody}`
+    return `${heading}${pageBody}${visualBody}`
   }).join('\n')
   return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:sans-serif;max-width:720px;margin:40px auto;line-height:1.8;"><h1>${title}</h1>${body}</body></html>`
 }
@@ -466,7 +585,8 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(0)
   const [level, setLevel] = useState(2)
   const [selectedCategories, setSelectedCategories] = useState(new Set(['common']))
-  const [includeFigures, setIncludeFigures] = useState(true)
+  const [sourceVisualsByPage, setSourceVisualsByPage] = useState({})
+  const [excludedVisualsByPage, setExcludedVisualsByPage] = useState({})
   const [alwaysBlankLinesByPage, setAlwaysBlankLinesByPage] = useState({})
   const [neverBlankLinesByPage, setNeverBlankLinesByPage] = useState({})
   const [alwaysList, setAlwaysList] = useState([])
@@ -489,6 +609,8 @@ export default function App() {
   const neverBlankLines = neverBlankLinesByPage[currentPage] || EMPTY_SET
   const manualInclude = manualIncludeByPage[currentPage] || EMPTY_SET
   const manualExclude = manualExcludeByPage[currentPage] || EMPTY_SET
+  const currentVisuals = sourceVisualsByPage[currentPage] || EMPTY_ARRAY
+  const excludedVisuals = excludedVisualsByPage[currentPage] || EMPTY_SET
   const userAnswers = userAnswersByPage[currentPage] || EMPTY_OBJ
   const checked = checkedByPage[currentPage] || false
 
@@ -500,13 +622,14 @@ export default function App() {
         selectedCategories,
         alwaysBlankLines,
         neverBlankLines,
-        includeFigures,
         alwaysList,
         neverList,
         manualInclude,
         manualExclude,
+        visuals: currentVisuals,
+        excludedVisuals,
       }),
-    [currentText, levelObj, selectedCategories, alwaysBlankLines, neverBlankLines, includeFigures, alwaysList, neverList, manualInclude, manualExclude],
+    [currentText, levelObj, selectedCategories, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, currentVisuals, excludedVisuals],
   )
 
   const allPageWorksheets = useMemo(
@@ -518,14 +641,15 @@ export default function App() {
           selectedCategories,
           alwaysBlankLines: alwaysBlankLinesByPage[i] || EMPTY_SET,
           neverBlankLines: neverBlankLinesByPage[i] || EMPTY_SET,
-          includeFigures,
           alwaysList,
           neverList,
           manualInclude: manualIncludeByPage[i] || EMPTY_SET,
           manualExclude: manualExcludeByPage[i] || EMPTY_SET,
+          visuals: sourceVisualsByPage[i] || [],
+          excludedVisuals: excludedVisualsByPage[i] || EMPTY_SET,
         }),
       ),
-    [sourcePages, levelObj, selectedCategories, alwaysBlankLinesByPage, neverBlankLinesByPage, includeFigures, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage],
+    [sourcePages, levelObj, selectedCategories, alwaysBlankLinesByPage, neverBlankLinesByPage, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage, sourceVisualsByPage, excludedVisualsByPage],
   )
 
   const totalBlankCount = allPageWorksheets.reduce((s, w) => s + w.blankCount, 0)
@@ -542,34 +666,28 @@ export default function App() {
     })
   }
 
-  function toggleAlwaysLine(idx) {
+  function cycleLineState(idx) {
+    const isAlways = alwaysBlankLines.has(idx)
+    const isNever = neverBlankLines.has(idx)
     setAlwaysBlankLinesByPage((prev) => {
       const next = new Set(prev[currentPage] || [])
-      if (next.has(idx)) next.delete(idx)
-      else next.add(idx)
+      if (isAlways) next.delete(idx)
+      else if (!isNever) next.add(idx)
       return { ...prev, [currentPage]: next }
     })
     setNeverBlankLinesByPage((prev) => {
-      const cur = prev[currentPage]
-      if (!cur || !cur.has(idx)) return prev
-      const next = new Set(cur)
-      next.delete(idx)
+      const next = new Set(prev[currentPage] || [])
+      if (isAlways) next.add(idx)
+      else if (isNever) next.delete(idx)
       return { ...prev, [currentPage]: next }
     })
   }
 
-  function toggleNeverLine(idx) {
-    setNeverBlankLinesByPage((prev) => {
+  function toggleVisual(visualId) {
+    setExcludedVisualsByPage((prev) => {
       const next = new Set(prev[currentPage] || [])
-      if (next.has(idx)) next.delete(idx)
-      else next.add(idx)
-      return { ...prev, [currentPage]: next }
-    })
-    setAlwaysBlankLinesByPage((prev) => {
-      const cur = prev[currentPage]
-      if (!cur || !cur.has(idx)) return prev
-      const next = new Set(cur)
-      next.delete(idx)
+      if (next.has(visualId)) next.delete(visualId)
+      else next.add(visualId)
       return { ...prev, [currentPage]: next }
     })
   }
@@ -607,26 +725,29 @@ export default function App() {
     setManualExcludeByPage({})
     setUserAnswersByPage({})
     setCheckedByPage({})
+    setExcludedVisualsByPage({})
   }
 
   async function loadFile(file) {
     if (!file) return
     if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-      setFileStatus('PDF에서 페이지별로 텍스트를 추출하는 중…')
+      setFileStatus('PDF에서 텍스트와 그림·도표를 추출하는 중…')
       try {
-        const pages = await extractPdfPages(file)
+        const { pages, visualsByPage } = await extractPdfPages(file)
         resetPageState()
+        setSourceVisualsByPage(visualsByPage)
         setSourcePages(pages.length ? pages : [''])
         setCurrentPage(0)
         setFileStatus('')
       } catch {
-        setFileStatus('PDF에서 텍스트를 추출하지 못했습니다.')
+        setFileStatus('PDF에서 텍스트와 그림·도표를 추출하지 못했습니다.')
       }
       return
     }
     const reader = new FileReader()
     reader.onload = () => {
       resetPageState()
+      setSourceVisualsByPage({})
       setSourcePages([String(reader.result || '')])
       setCurrentPage(0)
     }
@@ -660,6 +781,7 @@ export default function App() {
     setManualExcludeByPage((prev) => ({ ...prev, [currentPage]: new Set() }))
     setAlwaysBlankLinesByPage((prev) => ({ ...prev, [currentPage]: new Set() }))
     setNeverBlankLinesByPage((prev) => ({ ...prev, [currentPage]: new Set() }))
+    setExcludedVisualsByPage((prev) => ({ ...prev, [currentPage]: new Set() }))
     setUserAnswersByPage((prev) => ({ ...prev, [currentPage]: {} }))
     setCheckedByPage((prev) => ({ ...prev, [currentPage]: false }))
   }
@@ -718,7 +840,7 @@ export default function App() {
           >
             <p className="dz-title">여기로 파일을 끌어다 놓으세요</p>
             <p className="dz-sub">또는 클릭해서 파일 선택 · 아래 칸에 직접 붙여넣기</p>
-            <p className="dz-sub">PDF·TXT·MD·HTML 문서를 놓으면 원문의 줄바꿈을 유지해 본문 텍스트만 추출합니다 (PDF는 페이지 단위)</p>
+            <p className="dz-sub">PDF·TXT·MD·HTML 문서를 놓으면 원문의 줄바꿈과 표 간격을 유지합니다 (PDF 그림·도표 포함)</p>
             {fileStatus && <p className="dz-status">{fileStatus}</p>}
             <input ref={fileInputRef} type="file" accept=".txt,.md,.html,.pdf,application/pdf" hidden onChange={handleFile} />
           </div>
@@ -732,7 +854,7 @@ export default function App() {
 
         <section className="panel worksheet-panel">
           <div className="panel-head">
-            <span><span className="panel-num">02</span> 재가공된 학습지 미리보기</span>
+            <span><span className="panel-num">02</span> 빈칸 학습지 미리보기</span>
             <span className="meta">빈칸 {worksheet.blankCount} · 작성 {writtenCount} · 정답 {checked ? correctCount : 0}</span>
           </div>
 
@@ -761,6 +883,9 @@ export default function App() {
             </button>
             <button className="print-btn" onClick={() => window.print()}>인쇄·PDF</button>
           </div>
+          <div className="line-control-guide">
+            줄 번호 클릭: <span className="guide-auto">자동</span> → <span className="guide-always">항상 빈칸</span> → <span className="guide-never">항상 남기기</span>
+          </div>
 
           {worksheet.usedFallback && (
             <div className="fallback-note">선택한 과목에서 후보를 찾지 못해 공통 규칙으로 대체했습니다.</div>
@@ -783,8 +908,11 @@ export default function App() {
                 checked={checked}
                 editMode={editMode}
                 toggleManual={toggleManual}
+                cycleLineState={cycleLineState}
+                lineControlsEnabled={level !== 0}
               />
             ))}
+            <PageVisuals visuals={worksheet.visuals} toggleVisual={toggleVisual} />
             {worksheet.paragraphs.length === 0 && <p className="empty-msg">왼쪽에 지문을 입력하면 학습지가 생성됩니다.</p>}
           </div>
 
@@ -810,8 +938,11 @@ export default function App() {
                     checked={false}
                     editMode={false}
                     toggleManual={NOOP}
+                    cycleLineState={NOOP}
+                    lineControlsEnabled={false}
                   />
                 ))}
+                <PageVisuals visuals={ws.visuals} toggleVisual={NOOP} interactive={false} />
               </div>
             ))}
           </div>
@@ -848,10 +979,6 @@ export default function App() {
             ))}
           </div>
 
-          <label className="toggle-row">
-            <input type="checkbox" checked={includeFigures} onChange={(e) => setIncludeFigures(e.target.checked)} />
-            그림·그래프·표 포함 교환 <span className="toggle-hint">([그림 1] · 표 · 도식 캡션의 수치를 빈칸으로 사용</span>
-          </label>
         </div>
 
         <div className="control-card">
@@ -883,21 +1010,7 @@ export default function App() {
                 <span key={i} className="tag tag-always" onClick={() => setAlwaysList((p) => p.filter((_, idx) => idx !== i))}>{t} ×</span>
               ))}
             </div>
-            {worksheet.paragraphs.length > 0 && (
-              <div className="line-toggle-row">
-                <span className="line-toggle-label">줄 선택</span>
-                {worksheet.paragraphs.filter((p) => p.paraText.trim()).map((p) => (
-                  <button
-                    key={p.paraIdx}
-                    className={`line-chip${alwaysBlankLines.has(p.paraIdx) ? ' selected-always' : ''}`}
-                    onClick={() => toggleAlwaysLine(p.paraIdx)}
-                    title={`${p.paraIdx + 1}번째 줄 전체를 빈칸으로 가리기`}
-                  >
-                    {p.paraIdx + 1}
-                  </button>
-                ))}
-              </div>
-            )}
+            <p className="phrase-line-guide">줄 전체 지정은 위 미리보기의 줄 번호를 클릭하세요.</p>
           </div>
           <div className="phrase-col never">
             <h4>항상 그대로 남기기</h4>
@@ -911,26 +1024,12 @@ export default function App() {
                 <span key={i} className="tag tag-never" onClick={() => setNeverList((p) => p.filter((_, idx) => idx !== i))}>{t} ×</span>
               ))}
             </div>
-            {worksheet.paragraphs.length > 0 && (
-              <div className="line-toggle-row">
-                <span className="line-toggle-label">줄 선택</span>
-                {worksheet.paragraphs.filter((p) => p.paraText.trim()).map((p) => (
-                  <button
-                    key={p.paraIdx}
-                    className={`line-chip${neverBlankLines.has(p.paraIdx) ? ' selected-never' : ''}`}
-                    onClick={() => toggleNeverLine(p.paraIdx)}
-                    title={`${p.paraIdx + 1}번째 줄 전체를 빈칸 없이 남기기`}
-                  >
-                    {p.paraIdx + 1}
-                  </button>
-                ))}
-              </div>
-            )}
+            <p className="phrase-line-guide">줄 전체 지정은 위 미리보기의 줄 번호를 클릭하세요.</p>
           </div>
         </div>
       </section>
 
-      <footer className="footer-note">항상 빈칸으로 가리기 = 빈칸으로 지정 · 항상 그대로 남기기 = 절대 빈칸이 되지 않습니다</footer>
+      <footer className="footer-note">줄 번호를 클릭해 자동·항상 빈칸·항상 남기기를 전환하고, 그림·도표는 항목 옆 버튼으로 포함 여부를 선택할 수 있습니다.</footer>
     </div>
   )
 }

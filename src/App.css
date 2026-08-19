@@ -164,45 +164,6 @@
   outline-offset: -1px;
 }
 
-.line-toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-}
-
-.line-toggle-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-dim);
-  margin-right: 2px;
-}
-
-.line-chip {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  border: 1px solid var(--border-strong);
-  background: #fff;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.line-chip.selected-always {
-  background: var(--green);
-  border-color: var(--green);
-  color: #fff;
-}
-
-.line-chip.selected-never {
-  background: var(--red);
-  border-color: var(--red);
-  color: #fff;
-}
-
 .ghost-btn {
   border: 1px solid var(--border-strong);
   background: #fff;
@@ -362,13 +323,42 @@
 
 .ws-line-num {
   flex: 0 0 auto;
-  width: 20px;
+  width: 26px;
   text-align: right;
   font-size: 11px;
   color: var(--text-dim);
   font-family: var(--mono, monospace);
   padding-top: 3px;
   user-select: none;
+}
+
+.ws-line-action {
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  padding: 3px 4px;
+  cursor: pointer;
+  text-align: center;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.ws-line-action:hover,
+.ws-line-action:focus-visible {
+  border-color: var(--border-strong);
+  background: var(--panel-alt);
+  outline: none;
+}
+
+.ws-line-action.line-always {
+  color: #fff;
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.ws-line-action.line-never {
+  color: #fff;
+  background: var(--red);
+  border-color: var(--red);
 }
 
 .ws-line-content {
@@ -474,6 +464,98 @@
 
 .figure-text {
   font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.line-control-guide {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--panel-alt);
+  border-radius: 6px;
+  padding: 6px 9px;
+}
+
+.guide-auto,
+.guide-always,
+.guide-never {
+  font-weight: 700;
+}
+
+.guide-always {
+  color: var(--green);
+}
+
+.guide-never {
+  color: var(--red);
+}
+
+.page-visuals {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.page-visual-row {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+}
+
+.page-visual-row.is-excluded {
+  border-style: dashed;
+  background: var(--panel-alt);
+}
+
+.page-visual-marker {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  padding-top: 4px;
+}
+
+.page-visual-content {
+  min-width: 0;
+}
+
+.page-visual-content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  border-radius: 4px;
+}
+
+.page-visual-placeholder {
+  min-height: 48px;
+  display: grid;
+  place-items: center;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.visual-toggle-btn {
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: #fff;
+  padding: 5px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.visual-toggle-btn.exclude {
+  color: var(--red);
+}
+
+.visual-toggle-btn.include {
+  color: var(--green);
 }
 
 .controls-grid {
@@ -584,19 +666,6 @@
   color: #fff;
 }
 
-.toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  margin-top: 10px;
-  cursor: pointer;
-}
-
-.toggle-hint {
-  color: var(--text-dim);
-}
-
 .download-btn {
   width: 100%;
   background: var(--ink);
@@ -630,6 +699,12 @@
   font-size: 12px;
   color: var(--text-dim);
   margin: 0 0 8px;
+}
+
+.phrase-line-guide {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--text-dim);
 }
 
 .phrase-col.always h4 {
@@ -710,6 +785,7 @@
   .topbar,
   .source-panel,
   .worksheet-toolbar,
+  .line-control-guide,
   .fallback-note,
   .controls-grid,
   .footer-note,
@@ -729,6 +805,15 @@
   }
   .candidate-chip {
     border-bottom: none;
+  }
+  .page-visual-row {
+    grid-template-columns: 1fr;
+    border: none;
+    padding: 0;
+  }
+  .page-visual-marker,
+  .visual-toggle-btn {
+    display: none;
   }
   .print-all-pages {
     display: block;
