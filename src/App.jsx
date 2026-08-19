@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import './App.css'
 import pkg from '../package.json'
 
-async function extractPdfText(file) {
+async function extractPdfPages(file) {
   const [pdfjsLib, { default: pdfjsWorker }] = await Promise.all([
     import('pdfjs-dist'),
     import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
@@ -11,14 +11,18 @@ async function extractPdfText(file) {
 
   const buffer = await file.arrayBuffer()
   const pdf = await pdfjsLib.getDocument({ data: buffer }).promise
-  const pageTexts = []
+  const pages = []
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i)
     const content = await page.getTextContent()
-    pageTexts.push(content.items.map((it) => it.str).join(' '))
+    pages.push(content.items.map((it) => it.str).join(' ').trim())
   }
-  return pageTexts.join('\n')
+  return pages
 }
+
+const EMPTY_SET = new Set()
+const EMPTY_OBJ = {}
+const NOOP = () => {}
 
 const LEVELS = [
   { id: 1, label: 'L1', name: '가볍게', density: 0.06, minGapWords: 6 },
@@ -349,65 +353,85 @@ function downloadFile(filename, content, mime) {
   URL.revokeObjectURL(url)
 }
 
-function buildPlainText(worksheet, title, reveal) {
+function blankFillText(b, reveal) {
+  return reveal ? b.clean : (b.style === 'hint' ? `${b.clean[0]}${'_'.repeat(Math.max(b.clean.length - 1, 3))}` : '_'.repeat(Math.max(b.clean.length, 4)))
+}
+
+function buildPlainText(worksheets, title, reveal) {
   const lines = [title, '']
-  for (const p of worksheet.paragraphs) {
-    let text = p.paraText
-    const blanksDesc = [...p.blanks].sort((a, b) => b.start - a.start)
-    for (const b of blanksDesc) {
-      const fill = reveal ? b.clean : (b.style === 'hint' ? `${b.clean[0]}${'_'.repeat(Math.max(b.clean.length - 1, 3))}` : '_'.repeat(Math.max(b.clean.length, 4)))
-      text = text.slice(0, b.start) + fill + text.slice(b.end)
+  worksheets.forEach((ws, pageIdx) => {
+    if (worksheets.length > 1) {
+      lines.push(`── ${pageIdx + 1}페이지 ──`, '')
     }
-    lines.push(p.figure ? `[FIGURE] ${text}` : text)
-    lines.push('')
-  }
+    for (const p of ws.paragraphs) {
+      let text = p.paraText
+      const blanksDesc = [...p.blanks].sort((a, b) => b.start - a.start)
+      for (const b of blanksDesc) {
+        text = text.slice(0, b.start) + blankFillText(b, reveal) + text.slice(b.end)
+      }
+      lines.push(p.figure ? `[FIGURE] ${text}` : text)
+      lines.push('')
+    }
+  })
   return lines.join('\n')
 }
 
-function buildHtml(worksheet, title, reveal) {
-  const body = worksheet.paragraphs.map((p) => {
-    let text = p.paraText
-    const blanksDesc = [...p.blanks].sort((a, b) => b.start - a.start)
-    for (const b of blanksDesc) {
-      const fill = reveal
-        ? `<b style="color:#2f6b46">${b.clean}</b>`
-        : `<span style="display:inline-block;border-bottom:1px solid #333;min-width:${Math.max(b.clean.length, 4)}ch;">&nbsp;</span>`
-      text = text.slice(0, b.start) + fill + text.slice(b.end)
-    }
-    return p.figure ? `<div style="border:1px dashed #999;padding:8px;margin:8px 0;">${text}</div>` : `<p>${text}</p>`
+function buildHtml(worksheets, title, reveal) {
+  const body = worksheets.map((ws, pageIdx) => {
+    const pageBody = ws.paragraphs.map((p) => {
+      let text = p.paraText
+      const blanksDesc = [...p.blanks].sort((a, b) => b.start - a.start)
+      for (const b of blanksDesc) {
+        const fill = reveal
+          ? `<b style="color:#2f6b46">${b.clean}</b>`
+          : `<span style="display:inline-block;border-bottom:1px solid #333;min-width:${Math.max(b.clean.length, 4)}ch;">&nbsp;</span>`
+        text = text.slice(0, b.start) + fill + text.slice(b.end)
+      }
+      return p.figure ? `<div style="border:1px dashed #999;padding:8px;margin:8px 0;">${text}</div>` : `<p>${text}</p>`
+    }).join('\n')
+    const heading = worksheets.length > 1 ? `<h2>${pageIdx + 1}페이지</h2>` : ''
+    return `${heading}${pageBody}`
   }).join('\n')
   return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:sans-serif;max-width:720px;margin:40px auto;line-height:1.8;"><h1>${title}</h1>${body}</body></html>`
 }
 
 export default function App() {
-  const [sourceText, setSourceText] = useState(
+  const [sourcePages, setSourcePages] = useState([
     '조선의 제4대 임금인 세종은 1443년 훈민정음을 창제하고 1446년에 이를 반포하였다. 새로운 문자는 스물여덟 자로 이루어졌으며, 백성이 쉽게 익혀 쓸 수 있도록 만들어졌다.\n세종은 집현전을 중심으로 학문 연구를 장려하였다. 정인지와 신숙주 등 젊은 학자들이 이곳에서 역법과 음운을 연구하였고, 그 성과는 칠정산이라는 역법서로 정리되었다.\n과학 기술 분야에서도 성과가 컸다. 장영실은 자동으로 시각을 알리는 물시계인 자격루를 제작하였으며, 강우량을 재는 측우기는 1441년에 만들어져 전국의 관청에 보급되었다.',
-  )
+  ])
+  const [currentPage, setCurrentPage] = useState(0)
   const [level, setLevel] = useState(2)
   const [selectedCategories, setSelectedCategories] = useState(new Set(['common']))
   const [includeFigures, setIncludeFigures] = useState(true)
-  const [alwaysBlankLines, setAlwaysBlankLines] = useState(new Set())
-  const [neverBlankLines, setNeverBlankLines] = useState(new Set())
+  const [alwaysBlankLinesByPage, setAlwaysBlankLinesByPage] = useState({})
+  const [neverBlankLinesByPage, setNeverBlankLinesByPage] = useState({})
   const [alwaysList, setAlwaysList] = useState([])
   const [neverList, setNeverList] = useState([])
   const [alwaysInput, setAlwaysInput] = useState('')
   const [neverInput, setNeverInput] = useState('')
-  const [manualInclude, setManualInclude] = useState(new Set())
-  const [manualExclude, setManualExclude] = useState(new Set())
+  const [manualIncludeByPage, setManualIncludeByPage] = useState({})
+  const [manualExcludeByPage, setManualExcludeByPage] = useState({})
   const [studyMode, setStudyMode] = useState('fill')
-  const [userAnswers, setUserAnswers] = useState({})
-  const [checked, setChecked] = useState(false)
+  const [userAnswersByPage, setUserAnswersByPage] = useState({})
+  const [checkedByPage, setCheckedByPage] = useState({})
   const [exportFormat, setExportFormat] = useState('pdf')
   const [worksheetTitle, setWorksheetTitle] = useState('빈칸 학습지')
   const [fileStatus, setFileStatus] = useState('')
   const fileInputRef = useRef(null)
 
   const levelObj = LEVELS.find((l) => l.id === level)
+  const currentText = sourcePages[currentPage] || ''
+  const alwaysBlankLines = alwaysBlankLinesByPage[currentPage] || EMPTY_SET
+  const neverBlankLines = neverBlankLinesByPage[currentPage] || EMPTY_SET
+  const manualInclude = manualIncludeByPage[currentPage] || EMPTY_SET
+  const manualExclude = manualExcludeByPage[currentPage] || EMPTY_SET
+  const userAnswers = userAnswersByPage[currentPage] || EMPTY_OBJ
+  const checked = checkedByPage[currentPage] || false
 
   const worksheet = useMemo(
     () =>
       buildWorksheet({
-        sourceText,
+        sourceText: currentText,
         level: levelObj,
         selectedCategories,
         alwaysBlankLines,
@@ -418,8 +442,29 @@ export default function App() {
         manualInclude,
         manualExclude,
       }),
-    [sourceText, levelObj, selectedCategories, alwaysBlankLines, neverBlankLines, includeFigures, alwaysList, neverList, manualInclude, manualExclude],
+    [currentText, levelObj, selectedCategories, alwaysBlankLines, neverBlankLines, includeFigures, alwaysList, neverList, manualInclude, manualExclude],
   )
+
+  const allPageWorksheets = useMemo(
+    () =>
+      sourcePages.map((text, i) =>
+        buildWorksheet({
+          sourceText: text,
+          level: levelObj,
+          selectedCategories,
+          alwaysBlankLines: alwaysBlankLinesByPage[i] || EMPTY_SET,
+          neverBlankLines: neverBlankLinesByPage[i] || EMPTY_SET,
+          includeFigures,
+          alwaysList,
+          neverList,
+          manualInclude: manualIncludeByPage[i] || EMPTY_SET,
+          manualExclude: manualExcludeByPage[i] || EMPTY_SET,
+        }),
+      ),
+    [sourcePages, levelObj, selectedCategories, alwaysBlankLinesByPage, neverBlankLinesByPage, includeFigures, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage],
+  )
+
+  const totalBlankCount = allPageWorksheets.reduce((s, w) => s + w.blankCount, 0)
 
   const writtenCount = Object.values(userAnswers).filter((v) => v && v.trim()).length
   const correctCount = worksheet.answers.filter((a) => (userAnswers[a.key] || '').trim() === a.clean).length
@@ -434,64 +479,81 @@ export default function App() {
   }
 
   function toggleAlwaysLine(idx) {
-    setAlwaysBlankLines((prev) => {
-      const next = new Set(prev)
+    setAlwaysBlankLinesByPage((prev) => {
+      const next = new Set(prev[currentPage] || [])
       if (next.has(idx)) next.delete(idx)
       else next.add(idx)
-      return next
+      return { ...prev, [currentPage]: next }
     })
-    setNeverBlankLines((prev) => {
-      if (!prev.has(idx)) return prev
-      const next = new Set(prev)
+    setNeverBlankLinesByPage((prev) => {
+      const cur = prev[currentPage]
+      if (!cur || !cur.has(idx)) return prev
+      const next = new Set(cur)
       next.delete(idx)
-      return next
+      return { ...prev, [currentPage]: next }
     })
   }
 
   function toggleNeverLine(idx) {
-    setNeverBlankLines((prev) => {
-      const next = new Set(prev)
+    setNeverBlankLinesByPage((prev) => {
+      const next = new Set(prev[currentPage] || [])
       if (next.has(idx)) next.delete(idx)
       else next.add(idx)
-      return next
+      return { ...prev, [currentPage]: next }
     })
-    setAlwaysBlankLines((prev) => {
-      if (!prev.has(idx)) return prev
-      const next = new Set(prev)
+    setAlwaysBlankLinesByPage((prev) => {
+      const cur = prev[currentPage]
+      if (!cur || !cur.has(idx)) return prev
+      const next = new Set(cur)
       next.delete(idx)
-      return next
+      return { ...prev, [currentPage]: next }
     })
   }
 
   function setUserAnswer(key, val) {
-    setUserAnswers((prev) => ({ ...prev, [key]: val }))
+    setUserAnswersByPage((prev) => ({ ...prev, [currentPage]: { ...(prev[currentPage] || {}), [key]: val } }))
   }
 
   function toggleManual(key, kind) {
     if (kind === 'exclude') {
-      setManualExclude((prev) => new Set(prev).add(key))
-      setManualInclude((prev) => {
-        const next = new Set(prev)
+      setManualExcludeByPage((prev) => ({ ...prev, [currentPage]: new Set(prev[currentPage] || []).add(key) }))
+      setManualIncludeByPage((prev) => {
+        const cur = prev[currentPage]
+        if (!cur || !cur.has(key)) return prev
+        const next = new Set(cur)
         next.delete(key)
-        return next
+        return { ...prev, [currentPage]: next }
       })
     } else {
-      setManualInclude((prev) => new Set(prev).add(key))
-      setManualExclude((prev) => {
-        const next = new Set(prev)
+      setManualIncludeByPage((prev) => ({ ...prev, [currentPage]: new Set(prev[currentPage] || []).add(key) }))
+      setManualExcludeByPage((prev) => {
+        const cur = prev[currentPage]
+        if (!cur || !cur.has(key)) return prev
+        const next = new Set(cur)
         next.delete(key)
-        return next
+        return { ...prev, [currentPage]: next }
       })
     }
+  }
+
+  function resetPageState() {
+    setAlwaysBlankLinesByPage({})
+    setNeverBlankLinesByPage({})
+    setManualIncludeByPage({})
+    setManualExcludeByPage({})
+    setUserAnswersByPage({})
+    setCheckedByPage({})
   }
 
   async function loadFile(file) {
     if (!file) return
     if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-      setFileStatus('PDF에서 텍스트를 추출하는 중…')
+      setFileStatus('PDF에서 페이지별로 텍스트를 추출하는 중…')
       try {
-        const text = await extractPdfText(file)
-        setSourceText(text.trim())
+        const pages = await extractPdfPages(file)
+        resetPageState()
+        setSourcePages(pages.length ? pages : [''])
+        setCurrentPage(0)
         setFileStatus('')
       } catch {
         setFileStatus('PDF에서 텍스트를 추출하지 못했습니다.')
@@ -499,7 +561,11 @@ export default function App() {
       return
     }
     const reader = new FileReader()
-    reader.onload = () => setSourceText(String(reader.result || ''))
+    reader.onload = () => {
+      resetPageState()
+      setSourcePages([String(reader.result || '')])
+      setCurrentPage(0)
+    }
     reader.readAsText(file)
   }
 
@@ -526,12 +592,12 @@ export default function App() {
   }
 
   function regenerate() {
-    setManualInclude(new Set())
-    setManualExclude(new Set())
-    setAlwaysBlankLines(new Set())
-    setNeverBlankLines(new Set())
-    setUserAnswers({})
-    setChecked(false)
+    setManualIncludeByPage((prev) => ({ ...prev, [currentPage]: new Set() }))
+    setManualExcludeByPage((prev) => ({ ...prev, [currentPage]: new Set() }))
+    setAlwaysBlankLinesByPage((prev) => ({ ...prev, [currentPage]: new Set() }))
+    setNeverBlankLinesByPage((prev) => ({ ...prev, [currentPage]: new Set() }))
+    setUserAnswersByPage((prev) => ({ ...prev, [currentPage]: {} }))
+    setCheckedByPage((prev) => ({ ...prev, [currentPage]: false }))
   }
 
   function handleDownload() {
@@ -540,10 +606,10 @@ export default function App() {
       return
     }
     const reveal = studyMode === 'reveal'
-    if (exportFormat === 'txt') downloadFile(`${worksheetTitle}.txt`, buildPlainText(worksheet, worksheetTitle, reveal), 'text/plain;charset=utf-8')
-    else if (exportFormat === 'md') downloadFile(`${worksheetTitle}.md`, `# ${worksheetTitle}\n\n` + buildPlainText(worksheet, '', reveal), 'text/markdown;charset=utf-8')
-    else if (exportFormat === 'html') downloadFile(`${worksheetTitle}.html`, buildHtml(worksheet, worksheetTitle, reveal), 'text/html;charset=utf-8')
-    else if (exportFormat === 'word') downloadFile(`${worksheetTitle}.doc`, buildHtml(worksheet, worksheetTitle, reveal), 'application/msword;charset=utf-8')
+    if (exportFormat === 'txt') downloadFile(`${worksheetTitle}.txt`, buildPlainText(allPageWorksheets, worksheetTitle, reveal), 'text/plain;charset=utf-8')
+    else if (exportFormat === 'md') downloadFile(`${worksheetTitle}.md`, `# ${worksheetTitle}\n\n` + buildPlainText(allPageWorksheets, '', reveal), 'text/markdown;charset=utf-8')
+    else if (exportFormat === 'html') downloadFile(`${worksheetTitle}.html`, buildHtml(allPageWorksheets, worksheetTitle, reveal), 'text/html;charset=utf-8')
+    else if (exportFormat === 'word') downloadFile(`${worksheetTitle}.doc`, buildHtml(allPageWorksheets, worksheetTitle, reveal), 'application/msword;charset=utf-8')
   }
 
   const editMode = studyMode === 'edit'
@@ -560,8 +626,26 @@ export default function App() {
         <section className="panel source-panel">
           <div className="panel-head">
             <span><span className="panel-num">01</span> 가공 전 자료</span>
-            <span className="meta">{sourceText.length}자 · {sourceText.split(/\n+/).filter((l) => l.trim()).length}줄</span>
+            <span className="meta">
+              {currentText.length}자 · {currentText.split(/\n+/).filter((l) => l.trim()).length}줄
+              {sourcePages.length > 1 ? ` · ${currentPage + 1}/${sourcePages.length}페이지` : ''}
+            </span>
           </div>
+          {sourcePages.length > 1 && (
+            <div className="page-select-row">
+              <span className="page-select-label">페이지</span>
+              {sourcePages.map((_, i) => (
+                <button
+                  key={i}
+                  className={`page-chip${currentPage === i ? ' active' : ''}`}
+                  onClick={() => setCurrentPage(i)}
+                  title={`원본 ${i + 1}페이지 보기`}
+                >
+                  {i + 1}
+                </button>
+              ))}
+            </div>
+          )}
           <div
             className="dropzone"
             onClick={() => fileInputRef.current?.click()}
@@ -570,14 +654,14 @@ export default function App() {
           >
             <p className="dz-title">여기로 파일을 끌어다 놓으세요</p>
             <p className="dz-sub">또는 클릭해서 파일 선택 · 아래 칸에 직접 붙여넣기</p>
-            <p className="dz-sub">PDF·TXT·MD·HTML 문서를 놓으면 본문 텍스트만 추출합니다</p>
+            <p className="dz-sub">PDF·TXT·MD·HTML 문서를 놓으면 본문 텍스트만 추출합니다 (PDF는 페이지 단위로 나뉩니다)</p>
             {fileStatus && <p className="dz-status">{fileStatus}</p>}
             <input ref={fileInputRef} type="file" accept=".txt,.md,.html,.pdf,application/pdf" hidden onChange={handleFile} />
           </div>
           <textarea
             className="source-textarea"
-            value={sourceText}
-            onChange={(e) => setSourceText(e.target.value)}
+            value={currentText}
+            onChange={(e) => setSourcePages((prev) => prev.map((t, i) => (i === currentPage ? e.target.value : t)))}
             placeholder="여기에 지문을 붙여넣으세요…"
           />
         </section>
@@ -607,7 +691,7 @@ export default function App() {
             <button
               className="check-btn"
               disabled={studyMode === 'reveal' || studyMode === 'edit'}
-              onClick={() => setChecked(true)}
+              onClick={() => setCheckedByPage((prev) => ({ ...prev, [currentPage]: true }))}
             >
               정답 확인
             </button>
@@ -638,6 +722,34 @@ export default function App() {
               />
             ))}
             {worksheet.paragraphs.length === 0 && <p className="empty-msg">왼쪽에 지문을 입력하면 학습지가 생성됩니다.</p>}
+          </div>
+
+          <div className="print-all-pages">
+            <div className="worksheet-title-row">
+              <span className="title-input">{worksheetTitle}</span>
+              <span className="title-meta">
+                빈칸 {totalBlankCount}개 · {allPageWorksheets[0]?.categoryLabel} · L{level} {levelObj.name}
+                {sourcePages.length > 1 ? ` · ${sourcePages.length}페이지` : ''}
+              </span>
+            </div>
+            <div className="name-row">이름 <span className="name-line" /></div>
+            {allPageWorksheets.map((ws, pageIdx) => (
+              <div key={pageIdx} className="print-page-block">
+                {pageIdx > 0 && <div className="print-page-label">{pageIdx + 1}페이지</div>}
+                {ws.paragraphs.map((p) => (
+                  <Paragraph
+                    key={p.paraIdx}
+                    p={p}
+                    studyMode={studyMode}
+                    userAnswers={EMPTY_OBJ}
+                    setUserAnswer={NOOP}
+                    checked={false}
+                    editMode={false}
+                    toggleManual={NOOP}
+                  />
+                ))}
+              </div>
+            ))}
           </div>
         </section>
       </main>

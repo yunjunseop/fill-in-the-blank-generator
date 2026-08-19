@@ -113,6 +113,38 @@
   margin: 8px 0 0;
 }
 
+.page-select-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.page-select-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-right: 2px;
+}
+
+.page-chip {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.page-chip.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
+}
+
 .source-textarea {
   flex: 1;
   min-height: 320px;
@@ -664,6 +696,10 @@
   padding: 10px 20px 24px;
 }
 
+.print-all-pages {
+  display: none;
+}
+
 @media print {
   .topbar,
   .source-panel,
@@ -671,7 +707,10 @@
   .fallback-note,
   .controls-grid,
   .footer-note,
-  .panel-head {
+  .panel-head,
+  .worksheet-body.manuscript,
+  .worksheet-panel > .worksheet-title-row,
+  .worksheet-panel > .name-row {
     display: none !important;
   }
   .workspace {
@@ -684,5 +723,17 @@
   }
   .candidate-chip {
     border-bottom: none;
+  }
+  .print-all-pages {
+    display: block;
+  }
+  .print-page-block + .print-page-block {
+    page-break-before: always;
+  }
+  .print-page-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-dim);
+    margin: 0 0 10px;
   }
 }
