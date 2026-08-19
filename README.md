@@ -1,16 +1,32 @@
-# React + Vite
+# 빈칸 학습지 생성기
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+지문을 붙여넣으면 핵심 내용을 골라 빈칸으로 재가공해주는 React + Vite 웹앱입니다.
 
-Currently, two official plugins are available:
+## 주요 기능
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- 텍스트 붙여넣기 또는 파일 드래그·드롭으로 원문 입력
+- 빈칸 인식 레벨(L1~L4)로 빈칸 밀도 조절
+- 공통/국어/영어/수학/사회/과학 + 추천 카테고리(정의·개념어, 연표·수치, 인물·고유명사, 논리 연결어, 첫 글자만 남기기)로 특화 빈칸 생성
+- 줄 단위로 자동/집중/원문유지 지정
+- 항상 빈칸으로 가리기 / 항상 그대로 남기기 어구 지정
+- 채워쓰기 / 보기에서 고르기 / 정답 공개 / 빈칸 편집 모드 + 정답 확인(채점)
+- TXT·MD·HTML·Word·인쇄(PDF) 내보내기
 
-## React Compiler
+## 개발
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```bash
+npm install
+npm run dev
+```
 
-## Expanding the Oxlint configuration
+## 빌드
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+```bash
+npm run build
+```
+
+## 배포
+
+`main` 브랜치에 push하면 Cloudflare Pages가 자동으로 빌드·배포합니다.
+
+- 사이트: https://fill-in-the-blank-generator.pages.dev
