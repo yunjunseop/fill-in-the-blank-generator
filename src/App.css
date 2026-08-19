@@ -5,7 +5,7 @@
 }
 
 .topbar {
-  background: var(--ink);
+  background: #35443d;
   color: #fff;
   padding: 18px 28px;
   display: flex;
@@ -20,7 +20,7 @@
   top: 8px;
   right: 12px;
   font-size: 10px;
-  color: #7d818a;
+  color: #afbbb5;
   letter-spacing: 0.2px;
 }
 
@@ -31,7 +31,7 @@
 }
 
 .brand-sub {
-  color: #b8bcc4;
+  color: #d3dcd7;
   font-size: 14px;
 }
 
@@ -240,20 +240,6 @@
 .print-btn:disabled {
   opacity: 0.55;
   cursor: wait;
-}
-
-.visual-all-btn {
-  border: 1px solid var(--red);
-  background: #fff;
-  color: var(--red);
-  border-radius: 8px;
-  padding: 8px 12px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.visual-all-btn:hover {
-  background: var(--red-bg);
 }
 
 .fallback-note {
@@ -711,6 +697,16 @@
   background: var(--green);
   border-color: var(--green);
   color: #fff;
+}
+
+.chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.visual-remove-chip.selected {
+  background: var(--red);
+  border-color: var(--red);
 }
 
 .boost-note {

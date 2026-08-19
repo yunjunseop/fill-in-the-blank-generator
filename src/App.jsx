@@ -492,7 +492,7 @@ function spanKey(paraIdx, start) {
 
 const LINE_BLANK_MATCH = (c) => c.length >= 2 && (HANGUL.test(c) || /\d/.test(c))
 
-function buildWorksheet({ sourceText, level, selectedCategories, selectedGrammarBoosts = EMPTY_SET, preserveHeadings = true, ignoredHeadings = EMPTY_SET, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, visuals = [], excludedVisuals = EMPTY_SET, layout = DEFAULT_LAYOUT, printPage = null }) {
+function buildWorksheet({ sourceText, level, selectedCategories, selectedGrammarBoosts = EMPTY_SET, preserveHeadings = true, reverseBlanks = false, ignoredHeadings = EMPTY_SET, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, visuals = [], excludedVisuals = EMPTY_SET, layout = DEFAULT_LAYOUT, printPage = null }) {
   const paragraphs = sourceText
     ? sourceText.replace(/\r\n?/g, '\n').split('\n')
     : []
@@ -619,6 +619,17 @@ function buildWorksheet({ sourceText, level, selectedCategories, selectedGrammar
     }
   }
 
+  if (reverseBlanks && !rawMode) {
+    for (const p of perPara) {
+      for (const span of p.pool) {
+        if (span.forced) continue
+        const key = spanKey(p.paraIdx, span.start)
+        if (chosenKeys.has(key)) chosenKeys.delete(key)
+        else chosenKeys.add(key)
+      }
+    }
+  }
+
   if (!rawMode) {
     for (const k of manualInclude) chosenKeys.add(k)
     for (const k of manualExclude) chosenKeys.delete(k)
@@ -637,7 +648,8 @@ function buildWorksheet({ sourceText, level, selectedCategories, selectedGrammar
   const answers = renderParas.flatMap((p) => p.blanks).sort((a, b) => a.seq - b.seq)
   const subjectLabel = usedFallback ? '공통(대체)' : effectiveCats.map((c) => c.label).join('·') || '공통'
   const specialLabel = SPECIAL_BOOSTS.filter((type) => activeSpecialBoosts.has(type.id)).map((type) => `${type.label}+50%`).join('·')
-  const categoryLabel = rawMode ? '원문' : specialLabel ? `${subjectLabel} · ${specialLabel}` : subjectLabel
+  const baseCategoryLabel = specialLabel ? `${subjectLabel} · ${specialLabel}` : subjectLabel
+  const categoryLabel = rawMode ? '원문' : reverseBlanks ? `${baseCategoryLabel} · 역빈칸` : baseCategoryLabel
 
   return {
     paragraphs: renderParas,
@@ -995,6 +1007,7 @@ export default function App() {
   const [selectedCategories, setSelectedCategories] = useState(new Set(['common']))
   const [selectedGrammarBoosts, setSelectedGrammarBoosts] = useState(new Set())
   const [preserveHeadings, setPreserveHeadings] = useState(true)
+  const [reverseBlanks, setReverseBlanks] = useState(false)
   const [sourceVisualsByPage, setSourceVisualsByPage] = useState({})
   const [sourceLayoutsByPage, setSourceLayoutsByPage] = useState({})
   const [sourcePrintPagesByPage, setSourcePrintPagesByPage] = useState({})
@@ -1042,6 +1055,7 @@ export default function App() {
         selectedCategories,
         selectedGrammarBoosts,
         preserveHeadings,
+        reverseBlanks,
         ignoredHeadings,
         alwaysBlankLines,
         neverBlankLines,
@@ -1054,7 +1068,7 @@ export default function App() {
         layout: currentLayout,
         printPage: currentPrintPage,
       }),
-    [currentText, levelObj, selectedCategories, selectedGrammarBoosts, preserveHeadings, ignoredHeadings, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, currentVisuals, excludedVisuals, currentLayout, currentPrintPage],
+    [currentText, levelObj, selectedCategories, selectedGrammarBoosts, preserveHeadings, reverseBlanks, ignoredHeadings, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, currentVisuals, excludedVisuals, currentLayout, currentPrintPage],
   )
 
   const allPageWorksheets = useMemo(
@@ -1066,6 +1080,7 @@ export default function App() {
           selectedCategories,
           selectedGrammarBoosts,
           preserveHeadings,
+          reverseBlanks,
           ignoredHeadings: ignoredHeadingsByPage[i] || EMPTY_SET,
           alwaysBlankLines: alwaysBlankLinesByPage[i] || EMPTY_SET,
           neverBlankLines: neverBlankLinesByPage[i] || EMPTY_SET,
@@ -1079,7 +1094,7 @@ export default function App() {
           printPage: sourcePrintPagesByPage[i] || null,
         }),
       ),
-    [sourcePages, levelObj, selectedCategories, selectedGrammarBoosts, preserveHeadings, ignoredHeadingsByPage, alwaysBlankLinesByPage, neverBlankLinesByPage, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage, sourceVisualsByPage, excludedVisualsByPage, sourceLayoutsByPage, sourcePrintPagesByPage],
+    [sourcePages, levelObj, selectedCategories, selectedGrammarBoosts, preserveHeadings, reverseBlanks, ignoredHeadingsByPage, alwaysBlankLinesByPage, neverBlankLinesByPage, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage, sourceVisualsByPage, excludedVisualsByPage, sourceLayoutsByPage, sourcePrintPagesByPage],
   )
 
   const totalBlankCount = allPageWorksheets.reduce((s, w) => s + w.blankCount, 0)
@@ -1384,11 +1399,6 @@ export default function App() {
             >
               정답 확인
             </button>
-            {totalVisualCount > 0 && (
-              <button className="visual-all-btn" onClick={toggleAllVisuals}>
-                {allVisualsExcluded ? '그림·도표 모두 다시 포함' : `그림·도표 모두 제거 (${totalVisualCount})`}
-              </button>
-            )}
             <button className="print-btn" onClick={preparePrint} disabled={isPreparingPrint}>
               {isPreparingPrint ? '인쇄 준비 중…' : effectivePrintMode === 'original' ? '원문 형식 인쇄' : '가독성 우선 인쇄'}
             </button>
@@ -1504,6 +1514,28 @@ export default function App() {
               제목·목차 자동 남기기
             </button>
           </div>
+          <div className="chip-row">
+            <span className="chip-row-label">빈칸 방식</span>
+            <button
+              className={`chip${reverseBlanks ? ' selected' : ''}`}
+              onClick={() => setReverseBlanks((value) => !value)}
+              disabled={level === 0}
+              title="자동으로 선택된 빈칸과 남은 후보를 서로 뒤집습니다. 수동 지정은 그대로 유지됩니다"
+            >
+              역빈칸 생성
+            </button>
+          </div>
+          {totalVisualCount > 0 && (
+            <div className="chip-row">
+              <span className="chip-row-label">그림·도표</span>
+              <button className={`chip visual-remove-chip${allVisualsExcluded ? ' selected' : ''}`} onClick={toggleAllVisuals}>
+                {allVisualsExcluded ? '모두 다시 포함' : `모두 제거 (${totalVisualCount})`}
+              </button>
+            </div>
+          )}
+          {reverseBlanks && level !== 0 && (
+            <p className="boost-note">자동 빈칸 후보의 선택을 반대로 적용합니다. 항상 빈칸·항상 남기기와 직접 편집한 항목은 유지됩니다.</p>
+          )}
           {selectedCategories.has('korean') && (
             <div className="special-option-panel">
               <div className="special-option-title">국어 9품사</div>

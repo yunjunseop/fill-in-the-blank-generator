@@ -1,0 +1,9 @@
+{
+  "name": "빈칸 학습지 생성기",
+  "short_name": "빈칸 학습지",
+  "lang": "ko",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f4ee",
+  "theme_color": "#35443d"
+}
