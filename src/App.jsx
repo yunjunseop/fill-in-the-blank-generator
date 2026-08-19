@@ -285,17 +285,17 @@ const NOOP = () => {}
 
 const LEVELS = [
   { id: 0, label: 'L0', name: '원문 그대로', density: 0, minGapWords: Infinity, densityLabel: '빈칸 없음' },
-  { id: 1, label: 'L1', name: '가볍게', density: 0.06, minGapWords: 6 },
-  { id: 2, label: 'L2', name: '기본', density: 0.1, minGapWords: 5 },
-  { id: 3, label: 'L3', name: '집중', density: 0.16, minGapWords: 4 },
-  { id: 4, label: 'L4', name: '심화', density: 0.22, minGapWords: 3 },
+  { id: 1, label: 'L1', name: '가볍게', density: 0.15, minGapWords: 3 },
+  { id: 2, label: 'L2', name: '기본', density: 0.3, minGapWords: 2 },
+  { id: 3, label: 'L3', name: '집중', density: 0.45, minGapWords: 1 },
+  { id: 4, label: 'L4', name: '심화', density: 0.6, minGapWords: 0 },
 ]
 
 const HANGUL = /[가-힣]/
 const LOGIC_WORDS = ['그러나', '하지만', '따라서', '그러므로', '또한', '그리고', '즉', '왜냐하면', '반면', '결국', '그래서', '한편', '더구나', '게다가', '그럼에도']
 const COMMON_STOP = new Set(['것', '수', '등', '때', '이후', '통해', '대한', '위해', '따라', '경우', '정도', '때문'])
 const ENGLISH_STOP = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'of', 'to', 'in', 'on', 'at', 'for', 'and', 'or', 'but', 'with', 'as', 'by', 'this', 'that', 'it', 'be', 'have', 'has', 'had'])
-const PARTICLES = ['은', '는', '이', '가', '의', '을', '를', '과', '와']
+const PARTICLES = ['으로부터', '에게서', '한테서', '에서는', '으로는', '에게', '한테', '에서', '으로', '부터', '까지', '보다', '처럼', '은', '는', '이', '가', '의', '을', '를', '과', '와', '로', '도', '만']
 
 function stripParticle(c) {
   for (const p of PARTICLES) {
@@ -311,18 +311,72 @@ const CATEGORIES = [
   { id: 'math', label: '수학', group: 'subject', test: (c) => /^\d+(\.\d+)?%?$/.test(c) || /(식|정리|함수|공식)$/.test(c) || /[×÷√±]/.test(c) },
   { id: 'society', label: '사회', group: 'subject', test: (c) => /^\d{3,4}년?$/.test(c) || /(법|조약|운동|제도|사건|왕조|전쟁|협정|개혁)$/.test(c) },
   { id: 'science', label: '과학', group: 'subject', test: (c) => /^\d+(\.\d+)?(cm|mm|km|kg|g|m|℃|%|초|분|시간|Hz|N|J)$/.test(c) || /(현상|물질|에너지|원소|세포|반응|작용)$/.test(c) },
-  { id: 'define', label: '정의·개념어', group: 'recommend', test: (c) => c.length >= 3 && /(이란|정의|개념|법칙|원리|이론)$/.test(c) },
-  { id: 'timeline', label: '연표·수치', group: 'recommend', test: (c) => /^\d{1,4}(년|월|일)?$/.test(c) },
-  {
-    id: 'person', label: '인물·고유명사', group: 'recommend', test: (c) => {
-      if (!HANGUL.test(c) || c.length < 3 || c.length > 6) return false
-      const root = stripParticle(c)
-      return root.length >= 2 && root.length <= 4 && !COMMON_STOP.has(root)
-    },
-  },
-  { id: 'logic', label: '논리 연결어', group: 'recommend', test: (c) => LOGIC_WORDS.includes(c) },
-  { id: 'firstchar', label: '첫 글자만 남기기', group: 'recommend', style: 'hint', test: (c) => HANGUL.test(c) && c.length >= 4 },
 ]
+
+const PRONOUN_WORDS = new Set(['나', '너', '저', '우리', '저희', '너희', '그', '그녀', '그들', '이것', '그것', '저것', '누구', '무엇', '어디', '자기', '서로', '내', '제', '네', 'my', 'your', 'his', 'her', 'its', 'our', 'their', 'mine', 'yours', 'hers', 'ours', 'theirs', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'us', 'them', 'this', 'that', 'these', 'those', 'who', 'what', 'which'])
+const PREPOSITION_WORDS = new Set(['of', 'to', 'in', 'on', 'at', 'for', 'from', 'with', 'by', 'about', 'against', 'between', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'over', 'under', 'within', 'without', 'toward', 'towards', 'among', 'across', 'behind', 'beside', 'near'])
+const CONJUNCTION_WORDS = new Set(['and', 'or', 'but', 'so', 'yet', 'nor', 'for', 'because', 'although', 'though', 'while', 'whereas', 'if', 'unless', 'when', 'since', 'whether', '그리고', '그러나', '하지만', '따라서', '그러므로', '또한', '반면', '왜냐하면', '한편', '게다가'])
+const INTERJECTION_WORDS = new Set(['아', '어', '오', '와', '야', '어머', '아이고', '앗', '어휴', '참', '글쎄', '네', '예', '아니', 'hello', 'hi', 'hey', 'oh', 'wow', 'oops', 'ouch', 'alas', 'yes', 'no'])
+const ENGLISH_VERBS = new Set(['be', 'am', 'is', 'are', 'was', 'were', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'make', 'makes', 'made', 'get', 'gets', 'got', 'go', 'goes', 'went', 'come', 'comes', 'came', 'take', 'takes', 'took', 'see', 'sees', 'saw', 'know', 'knows', 'knew', 'think', 'thinks', 'thought', 'say', 'says', 'said'])
+const ENGLISH_ADJECTIVES = new Set(['good', 'bad', 'new', 'old', 'great', 'small', 'large', 'high', 'low', 'important', 'different', 'same', 'possible', 'necessary'])
+const ENGLISH_ADVERBS = new Set(['very', 'too', 'quite', 'rather', 'almost', 'always', 'never', 'often', 'sometimes', 'here', 'there', 'now', 'then'])
+const KOREAN_ADVERBS = new Set(['매우', '아주', '너무', '더', '가장', '잘', '못', '빨리', '천천히', '항상', '절대', '자주', '가끔', '이미', '아직', '곧', '바로'])
+const KOREAN_ADJECTIVE_ROOTS = /(같|크|작|높|낮|좋|나쁘|많|적|새롭|어렵|쉽|빠르|느리|중요하|필요하|가능하|다르|비슷하)/
+const KOREAN_PARTICLE_ENDING = /(으로부터|에게서|한테서|에게|한테|에서|으로|부터|까지|보다|처럼|은|는|이|가|의|을|를|과|와|로|도|만)$/
+
+function getGrammarTypes(clean) {
+  const lower = clean.toLowerCase()
+  const root = stripParticle(clean)
+  const types = new Set()
+  if (PRONOUN_WORDS.has(lower) || PRONOUN_WORDS.has(root)) types.add('pronoun')
+  if (PREPOSITION_WORDS.has(lower) || (HANGUL.test(clean) && KOREAN_PARTICLE_ENDING.test(clean))) types.add('preposition')
+  if (CONJUNCTION_WORDS.has(lower) || LOGIC_WORDS.includes(clean)) types.add('conjunction')
+  if (INTERJECTION_WORDS.has(lower) || INTERJECTION_WORDS.has(root)) types.add('interjection')
+
+  const isEnglishVerb = ENGLISH_VERBS.has(lower) || /(ed|ing|en|ify|ise|ize)$/.test(lower)
+  const isKoreanVerb = HANGUL.test(clean) && /(하다|한다|했다|하였다|하고|하며|하면|해서|되다|된다|됐다|되었다|되고|되며|되면|있다|없다|이다|이었다|입니다|한다면|하였다면)$/.test(clean)
+  if (isEnglishVerb || isKoreanVerb) types.add('verb')
+
+  const isEnglishAdjective = ENGLISH_ADJECTIVES.has(lower) || /(able|ible|al|ful|ic|ive|less|ous|ary|ory)$/.test(lower)
+  const isKoreanAdjective = HANGUL.test(clean) && KOREAN_ADJECTIVE_ROOTS.test(clean) && /(다|한|한데|하다|하며|하고|해서|은|는|게|지|웠다|웠던|운|운데|울)$/.test(clean)
+  if (isEnglishAdjective || isKoreanAdjective) types.add('adjective')
+
+  const isEnglishAdverb = ENGLISH_ADVERBS.has(lower) || /ly$/.test(lower)
+  const isKoreanAdverb = KOREAN_ADVERBS.has(root) || (HANGUL.test(clean) && /(하게|히|적으로)$/.test(clean))
+  if (isEnglishAdverb || isKoreanAdverb) types.add('adverb')
+
+  const isWord = /^[A-Za-z]{2,}$/.test(clean) || (clean.length >= 2 && HANGUL.test(clean))
+  const koreanParticleNoun = HANGUL.test(clean) && types.size === 1 && types.has('preposition')
+  if (isWord && (types.size === 0 || koreanParticleNoun)) types.add('noun')
+  return types
+}
+
+const GRAMMAR_BOOSTS = [
+  { id: 'noun', label: '명사' },
+  { id: 'pronoun', label: '대명사' },
+  { id: 'verb', label: '동사' },
+  { id: 'adjective', label: '형용사' },
+  { id: 'adverb', label: '부사' },
+  { id: 'preposition', label: '전치사·조사' },
+  { id: 'conjunction', label: '접속사' },
+  { id: 'interjection', label: '감탄사' },
+]
+
+function stableWeightedPriority(value, weight) {
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  const unit = ((hash >>> 0) + 1) / 4294967297
+  return -Math.log(unit) / weight
+}
+
+function spanDistance(a, b) {
+  if (a.end <= b.start) return b.start - a.end
+  if (b.end <= a.start) return a.start - b.end
+  return -1
+}
 
 const FORMATS = [
   { id: 'pdf', label: 'PDF·인쇄' },
@@ -372,7 +426,7 @@ function spanKey(paraIdx, start) {
 
 const LINE_BLANK_MATCH = (c) => c.length >= 2 && (HANGUL.test(c) || /\d/.test(c))
 
-function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, visuals = [], excludedVisuals = EMPTY_SET, layout = DEFAULT_LAYOUT, printPage = null }) {
+function buildWorksheet({ sourceText, level, selectedCategories, selectedGrammarBoosts = EMPTY_SET, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, visuals = [], excludedVisuals = EMPTY_SET, layout = DEFAULT_LAYOUT, printPage = null }) {
   const paragraphs = sourceText
     ? sourceText.replace(/\r\n?/g, '\n').split('\n')
     : []
@@ -407,7 +461,15 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
     } else {
       for (const w of words) {
         const cat = effectiveCats.find((c) => c.test(w.clean))
-        if (cat) candidates.push({ ...w, category: cat.id, style: cat.style || 'full', forced: false })
+        const grammarTypes = getGrammarTypes(w.clean)
+        const boosted = [...grammarTypes].some((type) => selectedGrammarBoosts.has(type))
+        if (cat || boosted) candidates.push({
+          ...w,
+          category: cat?.id || 'grammar',
+          style: 'full',
+          forced: false,
+          boosted,
+        })
       }
     }
 
@@ -430,11 +492,15 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
   const totalWords = eligible.reduce((s, p) => s + p.words.length, 0)
   const forcedSpansByPara = new Map(eligible.map((p) => [p.paraIdx, p.pool.filter((s) => s.forced)]))
   const forcedCountTotal = [...forcedSpansByPara.values()].reduce((s, arr) => s + arr.length, 0)
-  const targetBlanksTotal = Math.round(totalWords * density)
+  const boostedCandidateCount = eligible.reduce((sum, p) => sum + p.pool.filter((s) => s.boosted && !s.forced).length, 0)
+  const targetBlanksTotal = Math.round(totalWords * density + boostedCandidateCount * density * 0.5)
   const remainingBudget = Math.max(0, targetBlanksTotal - forcedCountTotal)
 
-  const totalWeighted = eligible.reduce((s, p) => s + p.words.length, 0) || 1
-  const rawShares = eligible.map((p) => ({ paraIdx: p.paraIdx, share: (p.words.length / totalWeighted) * remainingBudget }))
+  const totalWeighted = eligible.reduce((s, p) => s + p.words.length + p.pool.filter((span) => span.boosted && !span.forced).length * 0.5, 0) || 1
+  const rawShares = eligible.map((p) => {
+    const paragraphWeight = p.words.length + p.pool.filter((span) => span.boosted && !span.forced).length * 0.5
+    return { paraIdx: p.paraIdx, share: (paragraphWeight / totalWeighted) * remainingBudget }
+  })
   const floors = rawShares.map((r) => ({ ...r, floor: Math.floor(r.share) }))
   let usedBudget = floors.reduce((s, r) => s + r.floor, 0)
   let leftover = remainingBudget - usedBudget
@@ -454,19 +520,22 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
     }
     if (p.lineState === 'never') continue
     const share = shareMap.get(p.paraIdx) || 0
+    const acceptedSpans = p.pool.filter((span) => span.forced)
+    for (const span of acceptedSpans) chosenKeys.add(spanKey(p.paraIdx, span.start))
+    const rankedCandidates = p.pool
+      .filter((span) => !span.forced)
+      .map((span) => ({
+        ...span,
+        priority: stableWeightedPriority(`${p.paraIdx}:${span.start}:${span.clean}`, span.boosted ? 1.5 : 1),
+      }))
+      .sort((a, b) => a.priority - b.priority || a.start - b.start)
     let nonForcedAccepted = 0
-    let lastEnd = -Infinity
-    for (const s of p.pool) {
-      if (s.forced) {
-        chosenKeys.add(spanKey(p.paraIdx, s.start))
-        lastEnd = s.end
-        continue
-      }
-      if (nonForcedAccepted >= share) continue
-      if (s.start - lastEnd < minGapChars) continue
+    for (const s of rankedCandidates) {
+      if (nonForcedAccepted >= share) break
+      if (acceptedSpans.some((accepted) => spanDistance(accepted, s) < minGapChars)) continue
       chosenKeys.add(spanKey(p.paraIdx, s.start))
+      acceptedSpans.push(s)
       nonForcedAccepted++
-      lastEnd = s.end
     }
   }
 
@@ -486,7 +555,9 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
 
   const blankCount = renderParas.reduce((s, p) => s + p.blanks.length, 0)
   const answers = renderParas.flatMap((p) => p.blanks).sort((a, b) => a.seq - b.seq)
-  const categoryLabel = rawMode ? '원문' : usedFallback ? '공통(대체)' : effectiveCats.map((c) => c.label).join('·') || '공통'
+  const subjectLabel = usedFallback ? '공통(대체)' : effectiveCats.map((c) => c.label).join('·') || '공통'
+  const grammarLabel = GRAMMAR_BOOSTS.filter((type) => selectedGrammarBoosts.has(type.id)).map((type) => `${type.label}+50%`).join('·')
+  const categoryLabel = rawMode ? '원문' : grammarLabel ? `${subjectLabel} · ${grammarLabel}` : subjectLabel
 
   return {
     paragraphs: renderParas,
@@ -885,6 +956,7 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(0)
   const [level, setLevel] = useState(2)
   const [selectedCategories, setSelectedCategories] = useState(new Set(['common']))
+  const [selectedGrammarBoosts, setSelectedGrammarBoosts] = useState(new Set())
   const [sourceVisualsByPage, setSourceVisualsByPage] = useState({})
   const [sourceLayoutsByPage, setSourceLayoutsByPage] = useState({})
   const [sourcePrintPagesByPage, setSourcePrintPagesByPage] = useState({})
@@ -925,6 +997,7 @@ export default function App() {
         sourceText: currentText,
         level: levelObj,
         selectedCategories,
+        selectedGrammarBoosts,
         alwaysBlankLines,
         neverBlankLines,
         alwaysList,
@@ -936,7 +1009,7 @@ export default function App() {
         layout: currentLayout,
         printPage: currentPrintPage,
       }),
-    [currentText, levelObj, selectedCategories, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, currentVisuals, excludedVisuals, currentLayout, currentPrintPage],
+    [currentText, levelObj, selectedCategories, selectedGrammarBoosts, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, currentVisuals, excludedVisuals, currentLayout, currentPrintPage],
   )
 
   const allPageWorksheets = useMemo(
@@ -946,6 +1019,7 @@ export default function App() {
           sourceText: text,
           level: levelObj,
           selectedCategories,
+          selectedGrammarBoosts,
           alwaysBlankLines: alwaysBlankLinesByPage[i] || EMPTY_SET,
           neverBlankLines: neverBlankLinesByPage[i] || EMPTY_SET,
           alwaysList,
@@ -958,7 +1032,7 @@ export default function App() {
           printPage: sourcePrintPagesByPage[i] || null,
         }),
       ),
-    [sourcePages, levelObj, selectedCategories, alwaysBlankLinesByPage, neverBlankLinesByPage, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage, sourceVisualsByPage, excludedVisualsByPage, sourceLayoutsByPage, sourcePrintPagesByPage],
+    [sourcePages, levelObj, selectedCategories, selectedGrammarBoosts, alwaysBlankLinesByPage, neverBlankLinesByPage, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage, sourceVisualsByPage, excludedVisualsByPage, sourceLayoutsByPage, sourcePrintPagesByPage],
   )
 
   const totalBlankCount = allPageWorksheets.reduce((s, w) => s + w.blankCount, 0)
@@ -969,6 +1043,15 @@ export default function App() {
 
   function toggleCategory(id) {
     setSelectedCategories((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleGrammarBoost(id) {
+    setSelectedGrammarBoosts((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
@@ -1300,7 +1383,7 @@ export default function App() {
               <button key={l.id} className={`level-btn${level === l.id ? ' active' : ''}`} onClick={() => setLevel(l.id)}>
                 <span className="level-id">{l.label}</span>
                 <span className="level-name">{l.name}</span>
-                <span className="level-pct">{l.densityLabel || `약 ${Math.round(l.density * 100)}%`}</span>
+                <span className="level-pct">{l.densityLabel || `${Math.round(l.density * 100)}%`}</span>
               </button>
             ))}
           </div>
@@ -1314,13 +1397,19 @@ export default function App() {
             ))}
           </div>
           <div className="chip-row">
-            <span className="chip-row-label">추천</span>
-            {CATEGORIES.filter((c) => c.group === 'recommend').map((c) => (
-              <button key={c.id} className={`chip${selectedCategories.has(c.id) ? ' selected' : ''}`} onClick={() => toggleCategory(c.id)}>
-                {c.label}
+            <span className="chip-row-label">품사 가중치</span>
+            {GRAMMAR_BOOSTS.map((type) => (
+              <button
+                key={type.id}
+                className={`chip${selectedGrammarBoosts.has(type.id) ? ' selected' : ''}`}
+                onClick={() => toggleGrammarBoost(type.id)}
+                title={`${type.label}로 인식된 단어의 빈칸 빈도를 50% 높입니다`}
+              >
+                {type.label} +50%
               </button>
             ))}
           </div>
+          <p className="boost-note">선택한 품사로 인식된 단어만 기본 레벨보다 빈칸 빈도가 50% 높아집니다. 한국어는 문장 형태를 바탕으로 간이 분석합니다.</p>
 
         </div>
 

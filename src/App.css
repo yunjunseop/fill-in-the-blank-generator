@@ -679,6 +679,13 @@
   color: #fff;
 }
 
+.boost-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
 .download-btn {
   width: 100%;
   background: var(--ink);
@@ -816,10 +823,6 @@
   display: block;
   z-index: 2;
   background: #fff;
-}
-
-.original-blank-overlay {
-  border-bottom: 0.12mm solid rgba(17, 17, 17, 0.48);
 }
 
 @media print {
