@@ -14,17 +14,19 @@ async function extractPdfPages(file) {
   const pages = []
   const visualsByPage = {}
   const layoutsByPage = {}
+  const printPagesByPage = {}
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i)
-    const viewport = page.getViewport({ scale: 1.5 })
+    const viewport = page.getViewport({ scale: 2 })
     const content = await page.getTextContent()
     const { text, lineTops, layout } = extractPdfPageText(content.items, viewport)
     pages.push(text)
     layoutsByPage[i - 1] = layout
     try {
-      const visuals = await extractPdfPageVisuals(page, viewport)
+      const { visuals, printPage } = await extractPdfPageVisuals(page, viewport)
+      printPagesByPage[i - 1] = printPage
       visualsByPage[i - 1] = visuals.map((visual) => {
-        const visualColumn = layout.columnCount === 2 && visual.width < viewport.width * 0.65
+        const visualColumn = layout.columnCount === 2 && visual.sourceWidth < viewport.width * 0.65
           ? visual.centerX < viewport.width / 2 ? 1 : 2
           : 0
         const firstLineBelow = lineTops.findIndex((lineTop, lineIndex) => (
@@ -44,9 +46,10 @@ async function extractPdfPages(file) {
       })
     } catch {
       visualsByPage[i - 1] = []
+      printPagesByPage[i - 1] = null
     }
   }
-  return { pages, visualsByPage, layoutsByPage }
+  return { pages, visualsByPage, layoutsByPage, printPagesByPage }
 }
 
 async function extractPdfPageVisuals(page, viewport) {
@@ -54,7 +57,7 @@ async function extractPdfPageVisuals(page, viewport) {
   canvas.width = Math.ceil(viewport.width)
   canvas.height = Math.ceil(viewport.height)
   const context = canvas.getContext('2d', { alpha: false })
-  if (!context) return []
+  if (!context) return { visuals: [], printPage: null }
 
   await page.render({ canvas, canvasContext: context, viewport, recordImages: true }).promise
   const coordinates = page.imageCoordinates || []
@@ -90,14 +93,24 @@ async function extractPdfPageVisuals(page, viewport) {
       src: crop.toDataURL('image/jpeg', 0.9),
       width: crop.width,
       height: crop.height,
+      sourceWidth: width,
+      sourceHeight: height,
       order: top,
       centerX: left + width / 2,
     })
   }
 
-  return visuals
+  const orderedVisuals = visuals
     .sort((a, b) => a.order - b.order)
     .map((visual, index) => ({ ...visual, id: `pdf-visual-${index + 1}`, number: index + 1 }))
+  return {
+    visuals: orderedVisuals,
+    printPage: {
+      src: canvas.toDataURL('image/png'),
+      width: canvas.width,
+      height: canvas.height,
+    },
+  }
 }
 
 function extractPdfPageText(items, viewport) {
@@ -184,6 +197,7 @@ function extractPdfPageText(items, viewport) {
   const lines = []
   const lineTops = []
   const lineColumns = []
+  const lineRuns = []
   let previousLine = null
   for (const line of orderedLines) {
     if (previousLine && previousLine.column === line.column) {
@@ -192,24 +206,33 @@ function extractPdfPageText(items, viewport) {
         lines.push('')
         lineTops.push(null)
         lineColumns.push(line.column)
+        lineRuns.push([])
       }
     }
     lines.push(line.text)
     lineTops.push(line.top)
     lineColumns.push(line.column)
+    lineRuns.push(line.runs)
     previousLine = line
   }
 
   return {
     text: lines.join('\n'),
     lineTops,
-    layout: { columnCount: hasTwoColumns ? 2 : 1, lineColumns },
+    layout: {
+      columnCount: hasTwoColumns ? 2 : 1,
+      lineColumns,
+      lineRuns,
+      pageWidth: viewport.width,
+      pageHeight: viewport.height,
+    },
   }
 }
 
 function buildPdfLineSegment(items, top, height) {
   let text = ''
   let previous = null
+  const runs = []
   for (const item of items) {
     if (previous && text && !/\s$/.test(text) && !/^\s/.test(item.text)) {
       const gap = item.x - (previous.x + previous.width)
@@ -219,12 +242,21 @@ function buildPdfLineSegment(items, top, height) {
         text += ' '.repeat(Math.min(10, Math.max(1, Math.round(gap / spaceWidth))))
       }
     }
+    const start = text.length
     text += item.text
+    runs.push({
+      start,
+      end: text.length,
+      x: item.x,
+      top: item.top,
+      width: item.width,
+      height: item.height,
+    })
     previous = item
   }
   const xMin = Math.min(...items.map((item) => item.x))
   const xMax = Math.max(...items.map((item) => item.x + item.width))
-  return { text: text.trimEnd(), top, height, xMin, xMax, centerX: (xMin + xMax) / 2 }
+  return { text: text.trimEnd(), top, height, xMin, xMax, centerX: (xMin + xMax) / 2, runs }
 }
 
 function getVerticalRange(lines) {
@@ -334,7 +366,7 @@ function spanKey(paraIdx, start) {
 
 const LINE_BLANK_MATCH = (c) => c.length >= 2 && (HANGUL.test(c) || /\d/.test(c))
 
-function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, visuals = [], excludedVisuals = EMPTY_SET, layout = DEFAULT_LAYOUT }) {
+function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, visuals = [], excludedVisuals = EMPTY_SET, layout = DEFAULT_LAYOUT, printPage = null }) {
   const paragraphs = sourceText
     ? sourceText.replace(/\r\n?/g, '\n').split('\n')
     : []
@@ -458,6 +490,7 @@ function buildWorksheet({ sourceText, level, selectedCategories, alwaysBlankLine
     categoryLabel,
     visuals: visuals.map((visual) => ({ ...visual, excluded: excludedVisuals.has(visual.id) })),
     layout,
+    printPage,
   }
 }
 
@@ -627,6 +660,69 @@ function PrintWorksheetContent({ worksheet, paragraphProps }) {
   )
 }
 
+function buildOriginalPrintOverlays(worksheet, reveal) {
+  if (reveal || !worksheet.layout.lineRuns) return []
+  const overlays = []
+  for (const paragraph of worksheet.paragraphs) {
+    const runs = worksheet.layout.lineRuns[paragraph.paraIdx] || []
+    for (const blank of paragraph.blanks) {
+      const blankStart = blank.style === 'hint' ? Math.min(blank.start + 1, blank.end) : blank.start
+      for (const run of runs) {
+        const overlapStart = Math.max(blankStart, run.start)
+        const overlapEnd = Math.min(blank.end, run.end)
+        if (overlapStart >= overlapEnd || run.end <= run.start) continue
+        const startRatio = (overlapStart - run.start) / (run.end - run.start)
+        const endRatio = (overlapEnd - run.start) / (run.end - run.start)
+        overlays.push({
+          key: `${paragraph.paraIdx}-${blank.start}-${run.start}`,
+          x: run.x + run.width * startRatio,
+          top: run.top - run.height * 0.08,
+          width: Math.max(run.width * (endRatio - startRatio), run.height * 0.8),
+          height: run.height * 1.18,
+        })
+      }
+    }
+  }
+  return overlays
+}
+
+function OriginalPrintPage({ worksheet, studyMode }) {
+  const { printPage, layout } = worksheet
+  const blankOverlays = buildOriginalPrintOverlays(worksheet, studyMode === 'reveal')
+  const removedVisuals = worksheet.visuals.filter((visual) => visual.excluded)
+  if (!printPage) return null
+
+  return (
+    <div className="original-print-page" style={{ aspectRatio: `${printPage.width} / ${printPage.height}` }}>
+      <img src={printPage.src} alt="원문 인쇄 페이지" />
+      {blankOverlays.map((overlay) => (
+        <span
+          key={overlay.key}
+          className="original-blank-overlay"
+          style={{
+            left: `${(overlay.x / layout.pageWidth) * 100}%`,
+            top: `${(overlay.top / layout.pageHeight) * 100}%`,
+            width: `${(overlay.width / layout.pageWidth) * 100}%`,
+            height: `${(overlay.height / layout.pageHeight) * 100}%`,
+          }}
+        />
+      ))}
+      {removedVisuals.map((visual) => (
+        <span
+          key={`removed-${visual.id}`}
+          className="original-removed-visual"
+          style={{
+            left: `${((visual.centerX - visual.sourceWidth / 2) / layout.pageWidth) * 100}%`,
+            top: `${(visual.order / layout.pageHeight) * 100}%`,
+            width: `${(visual.sourceWidth / layout.pageWidth) * 100}%`,
+            height: `${(visual.sourceHeight / layout.pageHeight) * 100}%`,
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
 function renderSegments(paraText, blanks, unchosen, ctx) {
   const marks = [
     ...blanks.map((b) => ({ ...b, kind: 'blank' })),
@@ -780,6 +876,7 @@ export default function App() {
   const [selectedCategories, setSelectedCategories] = useState(new Set(['common']))
   const [sourceVisualsByPage, setSourceVisualsByPage] = useState({})
   const [sourceLayoutsByPage, setSourceLayoutsByPage] = useState({})
+  const [sourcePrintPagesByPage, setSourcePrintPagesByPage] = useState({})
   const [excludedVisualsByPage, setExcludedVisualsByPage] = useState({})
   const [alwaysBlankLinesByPage, setAlwaysBlankLinesByPage] = useState({})
   const [neverBlankLinesByPage, setNeverBlankLinesByPage] = useState({})
@@ -793,7 +890,6 @@ export default function App() {
   const [userAnswersByPage, setUserAnswersByPage] = useState({})
   const [checkedByPage, setCheckedByPage] = useState({})
   const [exportFormat, setExportFormat] = useState('pdf')
-  const [printFontSize, setPrintFontSize] = useState(12)
   const [worksheetTitle, setWorksheetTitle] = useState('빈칸 학습지')
   const [fileStatus, setFileStatus] = useState('')
   const fileInputRef = useRef(null)
@@ -806,6 +902,7 @@ export default function App() {
   const manualExclude = manualExcludeByPage[currentPage] || EMPTY_SET
   const currentVisuals = sourceVisualsByPage[currentPage] || EMPTY_ARRAY
   const currentLayout = sourceLayoutsByPage[currentPage] || DEFAULT_LAYOUT
+  const currentPrintPage = sourcePrintPagesByPage[currentPage] || null
   const excludedVisuals = excludedVisualsByPage[currentPage] || EMPTY_SET
   const userAnswers = userAnswersByPage[currentPage] || EMPTY_OBJ
   const checked = checkedByPage[currentPage] || false
@@ -825,8 +922,9 @@ export default function App() {
         visuals: currentVisuals,
         excludedVisuals,
         layout: currentLayout,
+        printPage: currentPrintPage,
       }),
-    [currentText, levelObj, selectedCategories, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, currentVisuals, excludedVisuals, currentLayout],
+    [currentText, levelObj, selectedCategories, alwaysBlankLines, neverBlankLines, alwaysList, neverList, manualInclude, manualExclude, currentVisuals, excludedVisuals, currentLayout, currentPrintPage],
   )
 
   const allPageWorksheets = useMemo(
@@ -845,12 +943,14 @@ export default function App() {
           visuals: sourceVisualsByPage[i] || [],
           excludedVisuals: excludedVisualsByPage[i] || EMPTY_SET,
           layout: sourceLayoutsByPage[i] || DEFAULT_LAYOUT,
+          printPage: sourcePrintPagesByPage[i] || null,
         }),
       ),
-    [sourcePages, levelObj, selectedCategories, alwaysBlankLinesByPage, neverBlankLinesByPage, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage, sourceVisualsByPage, excludedVisualsByPage, sourceLayoutsByPage],
+    [sourcePages, levelObj, selectedCategories, alwaysBlankLinesByPage, neverBlankLinesByPage, alwaysList, neverList, manualIncludeByPage, manualExcludeByPage, sourceVisualsByPage, excludedVisualsByPage, sourceLayoutsByPage, sourcePrintPagesByPage],
   )
 
   const totalBlankCount = allPageWorksheets.reduce((s, w) => s + w.blankCount, 0)
+  const hasOriginalPrintPages = allPageWorksheets.length > 0 && allPageWorksheets.every((worksheetPage) => worksheetPage.printPage)
 
   const writtenCount = Object.values(userAnswers).filter((v) => v && v.trim()).length
   const correctCount = worksheet.answers.filter((a) => (userAnswers[a.key] || '').trim() === a.clean).length
@@ -931,10 +1031,11 @@ export default function App() {
     if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
       setFileStatus('PDF에서 텍스트와 그림·도표를 추출하는 중…')
       try {
-        const { pages, visualsByPage, layoutsByPage } = await extractPdfPages(file)
+        const { pages, visualsByPage, layoutsByPage, printPagesByPage } = await extractPdfPages(file)
         resetPageState()
         setSourceVisualsByPage(visualsByPage)
         setSourceLayoutsByPage(layoutsByPage)
+        setSourcePrintPagesByPage(printPagesByPage)
         setSourcePages(pages.length ? pages : [''])
         setCurrentPage(0)
         setFileStatus('')
@@ -948,6 +1049,7 @@ export default function App() {
       resetPageState()
       setSourceVisualsByPage({})
       setSourceLayoutsByPage({})
+      setSourcePrintPagesByPage({})
       setSourcePages([String(reader.result || '')])
       setCurrentPage(0)
     }
@@ -1001,7 +1103,7 @@ export default function App() {
   const editMode = studyMode === 'edit'
 
   return (
-    <div className="app" style={{ '--print-font-size': `${printFontSize}pt` }}>
+    <div className="app">
       <header className="topbar">
         <span className="brand">빈칸 학습지 생성기</span>
         <span className="brand-sub">지문을 넣으면 핵심 내용을 골라 빈칸으로 재가공합니다</span>
@@ -1088,7 +1190,7 @@ export default function App() {
             줄 번호 클릭: <span className="guide-auto">자동</span> → <span className="guide-always">항상 빈칸</span> → <span className="guide-never">항상 남기기</span>
           </div>
           <div className="print-format-note">
-            참고: 미리보기는 편집용 표시입니다. 인쇄할 때는 줄 번호와 상태색을 제외하고 원문 순서와 그림·표 위치를 유지하며, 2단 원문은 2단으로 복원합니다. 글자 크기에 따라 원문과 페이지 수가 달라질 수 있습니다.
+            참고: 미리보기는 편집용 표시입니다. PDF 인쇄는 원문의 글자 크기·단 구성·그림·표 위치와 페이지 수를 그대로 유지하고, 선택한 빈칸만 원문 위치에 반영합니다.
           </div>
 
           {worksheet.usedFallback && (
@@ -1120,30 +1222,37 @@ export default function App() {
           </div>
 
           <div className="print-all-pages">
-            <div className="worksheet-title-row">
-              <span className="title-input">{worksheetTitle}</span>
-              <span className="title-meta">
-                빈칸 {totalBlankCount}개 · {allPageWorksheets[0]?.categoryLabel} · L{level} {levelObj.name}
-                {sourcePages.length > 1 ? ` · ${sourcePages.length}페이지` : ''}
-              </span>
-            </div>
-            <div className="name-row">이름 <span className="name-line" /></div>
+            {!hasOriginalPrintPages && (
+              <>
+                <div className="worksheet-title-row">
+                  <span className="title-input">{worksheetTitle}</span>
+                  <span className="title-meta">
+                    빈칸 {totalBlankCount}개 · {allPageWorksheets[0]?.categoryLabel} · L{level} {levelObj.name}
+                    {sourcePages.length > 1 ? ` · ${sourcePages.length}페이지` : ''}
+                  </span>
+                </div>
+                <div className="name-row">이름 <span className="name-line" /></div>
+              </>
+            )}
             {allPageWorksheets.map((ws, pageIdx) => (
-              <div key={pageIdx} className="print-page-block">
-                {pageIdx > 0 && <div className="print-page-label">{pageIdx + 1}페이지</div>}
-                <PrintWorksheetContent
-                  worksheet={ws}
-                  paragraphProps={{
-                    studyMode,
-                    userAnswers: EMPTY_OBJ,
-                    setUserAnswer: NOOP,
-                    checked: false,
-                    editMode: false,
-                    toggleManual: NOOP,
-                    cycleLineState: NOOP,
-                    lineControlsEnabled: false,
-                  }}
-                />
+              <div key={pageIdx} className={`print-page-block${ws.printPage ? ' original-layout' : ''}`}>
+                {ws.printPage ? (
+                  <OriginalPrintPage worksheet={ws} studyMode={studyMode} />
+                ) : (
+                  <PrintWorksheetContent
+                    worksheet={ws}
+                    paragraphProps={{
+                      studyMode,
+                      userAnswers: EMPTY_OBJ,
+                      setUserAnswer: NOOP,
+                      checked: false,
+                      editMode: false,
+                      toggleManual: NOOP,
+                      cycleLineState: NOOP,
+                      lineControlsEnabled: false,
+                    }}
+                  />
+                )}
               </div>
             ))}
           </div>
@@ -1192,18 +1301,6 @@ export default function App() {
             ))}
           </div>
           <button className="download-btn" onClick={handleDownload}>내려받기</button>
-          <label className="print-size-control">
-            <span>인쇄 글자 크기</span>
-            <input
-              type="range"
-              min="9"
-              max="18"
-              step="1"
-              value={printFontSize}
-              onChange={(e) => setPrintFontSize(Number(e.target.value))}
-            />
-            <strong>{printFontSize}pt</strong>
-          </label>
           <div className="row-actions">
             <button className="ghost-btn" onClick={regenerate}>다시 생성</button>
             <button className="ghost-btn" onClick={() => alert('현재 설정이 저장되었습니다. (브라우저 세션 내 유지)')}>설정 저장</button>

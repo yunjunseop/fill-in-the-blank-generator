@@ -687,26 +687,6 @@
   margin: 6px 0;
 }
 
-.print-size-control {
-  display: grid;
-  grid-template-columns: auto minmax(90px, 1fr) 38px;
-  gap: 8px;
-  align-items: center;
-  margin: 8px 0 10px;
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
-.print-size-control input {
-  width: 100%;
-  accent-color: var(--green);
-}
-
-.print-size-control strong {
-  color: var(--ink);
-  text-align: right;
-}
-
 .row-actions {
   display: flex;
   gap: 8px;
@@ -809,7 +789,36 @@
   display: none;
 }
 
+.original-print-page {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  line-height: 0;
+  background: #fff;
+}
+
+.original-print-page > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.original-blank-overlay,
+.original-removed-visual {
+  position: absolute;
+  display: block;
+  z-index: 2;
+  background: #fff;
+}
+
+.original-blank-overlay {
+  border-bottom: 0.25mm solid #111;
+}
+
 @media print {
+  @page {
+    margin: 0;
+  }
   .topbar,
   .source-panel,
   .worksheet-toolbar,
@@ -836,7 +845,7 @@
     border-bottom: none;
   }
   .print-all-pages {
-    font-size: var(--print-font-size, 12pt);
+    font-size: 12pt;
     line-height: 1.7;
   }
   .print-all-pages .ws-line {
@@ -889,6 +898,14 @@
   }
   .print-all-pages {
     display: block;
+  }
+  .print-page-block.original-layout {
+    break-after: page;
+    page-break-after: always;
+  }
+  .print-page-block.original-layout:last-child {
+    break-after: auto;
+    page-break-after: auto;
   }
   .print-page-label {
     display: none;
